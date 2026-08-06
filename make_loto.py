@@ -8,6 +8,7 @@ import os
 # （旧ソース loto6.the-luck.jp は名前解決できなくなったため差し替え）
 DATA_URL = "https://www.mk-mode.com/rails/loto/LOTO6_ALL.csv"
 CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loto6_history.json")
+OUTPUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loto_analysis.html")
 
 
 def load_cache():
@@ -33,8 +34,10 @@ def fetch_latest():
     reader = csv.reader(f)
     next(reader, None)  # ヘッダー行をスキップ
     history = []
+    skipped = 0
     for row in reader:
         if not row or len(row) < 9:
+            skipped += 1
             continue
         try:
             # 本数字6つ (昇順ソート)
@@ -46,7 +49,11 @@ def fetch_latest():
                 "bonus": int(row[8])
             })
         except ValueError:
+            skipped += 1
             continue
+
+    if skipped:
+        print(f"⚠ CSVの{skipped}行を解析できずスキップしました。データ提供元のCSV形式が変わっていないか確認してください。")
 
     # 時系列（古い順）に並べ替え
     history.sort(key=lambda x: x["id"])
@@ -84,9 +91,13 @@ def main():
         .main-container {{ width: 100%; max-width: 480px; padding: 10px 0; display: flex; flex-direction: column; align-items: center; }}
         .title {{ color: #e5c100; font-size: 18px; font-weight: bold; margin-bottom: 8px; text-shadow: 0 0 15px rgba(229,193,0,0.5); }}
         .board-wrapper {{ display: flex; gap: 10px; justify-content: center; align-items: flex-start; margin-bottom: 180px; width: 100%; padding: 0 15px; box-sizing: border-box; }}
-        .main-board {{ position: relative; width: 260px; height: 440px; background: rgba(0,0,0,0.85); padding: 10px; border-radius: 25px 25px 0 0; border: 2.5px solid #d4af37; border-bottom: none; box-shadow: 0 -10px 30px rgba(0,0,0,0.8); }}
+        .main-board {{ position: relative; width: 260px; height: 520px; background: rgba(0,0,0,0.85); padding: 10px; border-radius: 25px 25px 0 0; border: 2.5px solid #d4af37; border-bottom: none; box-shadow: 0 -10px 30px rgba(0,0,0,0.8); }}
         .ball {{ position: absolute; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 14px; border: 1.1px solid rgba(255, 255, 255, 0.4); box-shadow: 0 4px 8px rgba(0,0,0,0.5), inset -1px -1px 3px rgba(0,0,0,0.3); transition: left 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), top 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.6s; z-index: 10; }}
         .ball.glow-float {{ z-index: 100; transform: scale(1.6) translateY(-25px) !important; background-color: #ffffff !important; color: #000 !important; box-shadow: 0 0 30px #fff, 0 0 50px #ffd700; border-color: #fff; transition: transform 0.4s ease-out, background-color 0.3s !important; }}
+        /* 塗り色が近い組み合わせでも判別できるよう、縁取りの色をもう1つの手掛かりにする */
+        .ball.ring-white {{ border-width: 2.5px; border-color: #ffffff; box-shadow: 0 4px 8px rgba(0,0,0,0.5), inset -1px -1px 3px rgba(0,0,0,0.3), 0 0 5px rgba(255,255,255,0.5); }}
+        .ball.ring-black {{ border-width: 2.5px; border-color: #14100b; }}
+        .ball.ring-gold {{ border-width: 2.5px; border-color: #ffd700; box-shadow: 0 4px 8px rgba(0,0,0,0.5), inset -1px -1px 3px rgba(0,0,0,0.3), 0 0 6px rgba(255,215,0,0.55); }}
         .ball.active {{ border-color: #fff; box-shadow: 0 0 12px rgba(255,215,0,0.7); }}
         .bonus-section {{ display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 50px; }}
         .bonus-box {{ display: flex; flex-direction: column; gap: 8px; background: rgba(255, 255, 255, 0.08); padding: 10px; border-radius: 15px; border: 1.5px solid rgba(212, 175, 55, 0.3); align-items: center; }}
@@ -238,14 +249,40 @@ def main():
             <button class="btn" onclick="jump(100)">+100</button>
         </div>
         <div class="btn-group" style="display:flex; gap:10px; margin-top:5px;">
+            <button class="btn" style="background:#2a1a12" onclick="stepBackward()">◀ 前へ</button>
             <button id="auto-btn" class="btn btn-main" onclick="toggleAuto()">自動再生 / 停止</button>
-            <button class="btn" style="background:#2a1a12" onclick="stepForward()">次へ</button>
+            <button class="btn" style="background:#2a1a12" onclick="stepForward()">次へ ▶</button>
         </div>
     </div>
     <script>
         const fullData = {data_json};
-        const colorsRecent = ['#FFD700', '#FF0033', '#FF6600', '#FFCC00', '#CCFF00', '#66FF00', '#00FFCC', '#00CCFF', '#0066FF', '#6600FF'];
-        const colorsOld = ['#FFFFFF', '#F5F5F7', '#E5E5E7', '#D5D5D7', '#C5C5C7', '#B5B5B7', '#A5A5A7', '#959597', '#858587', '#757577'];
+
+        // 段(そのマスに何回前から居座っているか)は「位置」そのものが正確に表している
+        // (1段目=一番上、2段目=その下…と、動けば見ればわかる)ので、色に段を1対1で
+        // 正確に当てさせるのはやめた。色の役目は「盤面全体をパッと見た瞬間にどれが
+        // 熱い(直近で出た)数字かをざっくり掴む」ことだけに絞り、七色(虹)7バンドに
+        // まとめている(正確な段数は位置と「段×列マトリクス」タブで確認できる)。
+        //
+        // バンドの区切り方は実データ(全2125回・のべ12,707回の再登場)に基づく。
+        // 数字の再登場は上位の段ほど多く(1段目14.0%, 2段目11.9%, 3段目10.7%, 4段目9.1%…と
+        // 右肩下がり)、そこを潰して同じ色にすると一番見分けたい情報が消えてしまう。
+        // そのため1〜4段目は必ず単独の色にし、発生頻度が下がる5段目以降だけをまとめている
+        // (「上位重視案」で決定): 1 / 2 / 3 / 4 / 5-6 / 7-9 / 10-11+
+        const TIER_ROWS = 11; // A段〜K段。それより深い段は最終行「L段+」にまとめる
+        const TIER_LABELS = ['A','B','C','D','E','F','G','H','I','J','K','L'];
+        const BAND_COLORS = ['#e52b46', '#de7b29', '#bfa32e', '#29a039', '#207aa6', '#123cef', '#9629e5']; // 赤橙黄緑青藍紫
+        const BAND_TEXT   = ['#ffffff', '#1a120b', '#1a120b', '#1a120b', '#ffffff', '#ffffff', '#ffffff'];
+        const BAND_RING   = ['ring-white', 'ring-white', 'ring-black', 'ring-gold', 'ring-black', 'ring-white', 'ring-black'];
+        // 7色は隣接色だけでなく、色覚の種類によっては離れた色同士(赤↔緑、藍↔紫など)も
+        // 見分けにくくなる組み合わせが残る。そこで「縁取りの色」をもう1つの手掛かりとして
+        // 重ねている(白: 赤・橙・藍 / 黒: 黄・緑・紫 / 金: 青。紛らわしいペアが同じ縁取りに
+        // ならないよう検証済み)。
+        // tier(0〜11) → バンド番号(0〜6) の対応表。上4段は1段=1バンド、以降は複数段をまとめる。
+        const TIER_TO_BAND = [0, 1, 2, 3, 4, 4, 5, 5, 5, 6, 6, 6];
+        const bandOfTier = (tier) => TIER_TO_BAND[tier];
+        const NEVER_DRAWN_BG = '#efece4'; // まだ一度も出ていない数字(バンドとは別扱い)
+        const NEVER_DRAWN_TEXT = '#4a4a4a';
+
         let ballElements = {{}}; let currentIndex = 0; let lastDrawnAt = {{}}; let columns = [[], [], [], [], [], []]; let timer = null;
         let activeTab = 'board'; let freqMode = 'all'; let freqView = 'list';
         let pairMode = 'top20'; let selectedPairNum = null;
@@ -293,14 +330,23 @@ def main():
             columns.forEach((col, cIdx) => {{
                 col.forEach((num, rank) => {{
                     const el = ballElements[num];
-                    el.style.left = (cIdx * 41 + 10) + 'px'; el.style.top = (rank * 41 + 10) + 'px';
+                    // 11段(TIER_ROWS)を超えて積み上がった分は最終行にまとめ、
+                    // 少しずつ右下にずらして「チップが積み重なっている」ように見せる。
+                    const overflowDepth = Math.max(0, rank - TIER_ROWS);
+                    const displayRow = Math.min(rank, TIER_ROWS);
+                    el.style.left = (cIdx * 41 + 10 + overflowDepth * 5) + 'px';
+                    el.style.top = (displayRow * 41 + 10 + overflowDepth * 5) + 'px';
                     const freshness = (lastDrawnAt[num] !== -1) ? currentIndex - lastDrawnAt[num] : -1;
-                    if (freshness >= 0 && freshness < 10) {{
-                        el.style.backgroundColor = colorsRecent[freshness]; el.style.color = (freshness===0 || freshness===3 || freshness===4) ? '#1a120b' : 'white';
-                    }} else if (freshness >= 10) {{
-                        const oIdx = Math.min(freshness - 10, colorsOld.length - 1);
-                        el.style.backgroundColor = colorsOld[oIdx]; el.style.color = '#333';
-                    }} else {{ el.style.backgroundColor = '#FFFFFF'; el.style.color = '#333'; }}
+                    el.classList.remove('ring-white', 'ring-black', 'ring-gold');
+                    if (freshness === -1) {{
+                        el.style.backgroundColor = NEVER_DRAWN_BG; el.style.color = NEVER_DRAWN_TEXT;
+                    }} else {{
+                        const tier = Math.min(freshness, TIER_ROWS);
+                        const band = bandOfTier(tier);
+                        el.style.backgroundColor = BAND_COLORS[band];
+                        el.style.color = BAND_TEXT[band];
+                        el.classList.add(BAND_RING[band]);
+                    }}
                     if (draw.main.includes(num)) el.classList.add('active'); else el.classList.remove('active');
                 }});
             }});
@@ -604,9 +650,6 @@ def main():
             renderTierTab();
         }}
 
-        const TIER_ROWS = 10; // A段〜J段。それより深い段は最終行「K+」にまとめる
-        const TIER_LABELS = ['A','B','C','D','E','F','G','H','I','J'];
-
         // 盤面の実アルゴリズム(列=その回の昇順順位、段=同じ座標を最後に明け渡してからの深さ)を
         // 第1回から忠実に再生し、「(列, 段)座標で再登場が起きた回数」を集計する。
         // 直近100回モードでも、座標の状態を正しく保つため必ず第1回からシミュレートし、
@@ -667,7 +710,7 @@ def main():
             for (let row = 0; row <= TIER_ROWS; row++) {{
                 const tr = document.createElement('tr');
                 const labelTd = document.createElement('td'); labelTd.className = 'tier-label';
-                labelTd.innerText = row < TIER_ROWS ? (TIER_LABELS[row] + '段') : 'K段+';
+                labelTd.innerText = TIER_LABELS[row] + '段' + (row === TIER_ROWS ? '+' : '');
                 tr.appendChild(labelTd);
                 for (let c = 0; c < 6; c++) {{
                     const v = matrix[c + '-' + row] || 0;
@@ -694,6 +737,16 @@ def main():
             seekTo(currentIndex + 1);
         }}
 
+        // 「次へ」の逆再生。今表示中の回の数字を軽く光らせてから1つ前の回へ戻る。
+        async function stepBackward() {{
+            if (currentIndex <= 0) return;
+            const cur = fullData[currentIndex];
+            cur.main.forEach(n => document.getElementById('ball-' + n).classList.add('glow-float'));
+            await new Promise(r => setTimeout(r, 400));
+            cur.main.forEach(n => document.getElementById('ball-' + n).classList.remove('glow-float'));
+            seekTo(currentIndex - 1);
+        }}
+
         function jump(s) {{ seekTo(currentIndex + s); }}
         function toggleAuto() {{
             if(timer) {{ clearInterval(timer); timer = null; }}
@@ -710,9 +763,9 @@ def main():
 </html>
 """
 
-    with open('loto_analysis.html', 'w', encoding='utf-8') as f:
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write(html_content)
-    print("生成完了: loto_analysis.html が作成されました。")
+    print(f"生成完了: {OUTPUT_FILE} が作成されました。")
 
 if __name__ == '__main__':
     main()
