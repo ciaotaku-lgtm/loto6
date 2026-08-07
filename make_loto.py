@@ -60,6 +60,127 @@ def fetch_latest():
     return history
 
 
+def compute_tier_distribution(history):
+    """盤面・座標タブと同じアルゴリズム(列=昇順順位・段=move-to-front方式)で、
+    (列,段)ごとの再登場回数を全期間で集計し、段ごとの再登場回数と総数を返す。"""
+    tier_rows = 11
+    cols = [[] for _ in range(6)]
+    for i in range(1, 44):
+        cols[(i - 1) % 6].append(i)
+    seen = set()
+    tier_counts = [0] * (tier_rows + 1)
+    total = 0
+    for d in history:
+        m = d["main"]
+        for n in m:
+            if n in seen:
+                for ci in range(6):
+                    if n in cols[ci]:
+                        tier = cols[ci].index(n)
+                        tier_counts[min(tier, tier_rows)] += 1
+                        total += 1
+                        break
+            seen.add(n)
+        for n in m:
+            for ci in range(6):
+                if n in cols[ci]:
+                    cols[ci].remove(n)
+                    break
+        for pos, n in enumerate(m):
+            cols[pos].insert(0, n)
+    return tier_counts, total
+
+
+def compute_droughts(history):
+    """各番号の過去最長の連続未出記録と、現時点(最新回)での連続未出ランキングを返す。"""
+    n_draws = len(history)
+    last_seen = {i: -1 for i in range(1, 44)}
+    max_gap = {i: 0 for i in range(1, 44)}
+    max_gap_end = {i: None for i in range(1, 44)}
+    for idx, d in enumerate(history):
+        for n in d["main"]:
+            gap = idx - last_seen[n] - 1
+            if gap > max_gap[n]:
+                max_gap[n] = gap
+                max_gap_end[n] = idx
+            last_seen[n] = idx
+    for i in range(1, 44):
+        gap = n_draws - 1 - last_seen[i]
+        if gap > max_gap[i]:
+            max_gap[i] = gap
+            max_gap_end[i] = None
+
+    longest_num, longest_gap = max(max_gap.items(), key=lambda x: x[1])
+    longest_end_idx = max_gap_end[longest_num]
+    current_top = sorted(
+        ((i, n_draws - 1 - last_seen[i]) for i in range(1, 44)),
+        key=lambda x: -x[1],
+    )[:3]
+    return {
+        "longest_num": longest_num,
+        "longest_gap": longest_gap,
+        "longest_end": history[longest_end_idx] if longest_end_idx is not None else None,
+        "current_top": current_top,
+    }
+
+
+def compute_bonus_trivia(history):
+    """ボーナス数字にまつわる俗説をいくつか実データで検証する。"""
+    n = len(history)
+    hit_bonus_to_next_main = 0
+    hit_main_to_next_bonus = 0
+    for i in range(n - 1):
+        if history[i]["bonus"] in history[i + 1]["main"]:
+            hit_bonus_to_next_main += 1
+        if history[i + 1]["bonus"] in history[i]["main"]:
+            hit_main_to_next_bonus += 1
+    total_pairs = max(1, n - 1)
+
+    within_range = 0
+    for d in history:
+        mn, mx = min(d["main"]), max(d["main"])
+        if mn <= d["bonus"] <= mx:
+            within_range += 1
+
+    return {
+        "bonus_to_next_main_rate": hit_bonus_to_next_main / total_pairs * 100,
+        "main_to_next_bonus_rate": hit_main_to_next_bonus / total_pairs * 100,
+        "baseline_rate": 6 / 43 * 100,
+        "within_range_rate": within_range / n * 100 if n else 0,
+    }
+
+
+def build_trivia_html(history):
+    """座標分布の形・連続未出記録・ボーナス俗説の検証を、トリビアタブ用のHTMLカードにする。"""
+    tier_counts, tier_total = compute_tier_distribution(history)
+    tier_pct = [c / tier_total * 100 for c in tier_counts] if tier_total else [0] * len(tier_counts)
+    top4_min, top4_max = min(tier_pct[:4]), max(tier_pct[:4])
+    tail_pct = sum(tier_pct[9:])
+
+    droughts = compute_droughts(history)
+    end = droughts["longest_end"]
+    end_text = f"第{end['id']}回（{end['date']}）でようやく再登場しました" if end else "まだ再登場していません"
+    current_top_text = "、".join(f"{num}番（{gap}回）" for num, gap in droughts["current_top"])
+
+    bonus = compute_bonus_trivia(history)
+
+    cards = [
+        f'''<div class="trivia-card">
+            <h3 class="trivia-title">座標(段)の分布は「なだらか→崖」の形</h3>
+            <p class="trivia-body">全<span class="num">{len(history)}</span>回・のべ<span class="num">{tier_total:,}</span>回の再登場を集計すると、1〜4段目は<span class="num">{top4_min:.1f}〜{top4_max:.1f}%</span>でほぼ横並び、5段目あたりから急に減っていきます（10段目以降は合計<span class="num">{tail_pct:.1f}%</span>）。これは「直近に出た数字が列の先頭に来る」しくみ（move-to-front方式の自己組織化リストと同じ構造）による形で、抽選そのものの偏りではありません。</p>
+        </div>''',
+        f'''<div class="trivia-card">
+            <h3 class="trivia-title">連続未出（干上がり）記録</h3>
+            <p class="trivia-body">過去最長の連続未出は<span class="num">{droughts['longest_num']}番</span>の<span class="num">{droughts['longest_gap']}回</span>連続。{end_text}。現時点で連続未出が長いのは{current_top_text}です。</p>
+        </div>''',
+        f'''<div class="trivia-card">
+            <h3 class="trivia-title">ボーナス数字の都市伝説を検証</h3>
+            <p class="trivia-body">「前回のボーナス数字は次回、本数字として出やすい」という説を検証すると<span class="num">{bonus['bonus_to_next_main_rate']:.2f}%</span>（基準値{bonus['baseline_rate']:.2f}%）、逆に「前回の本数字は次回ボーナスになりやすい」も<span class="num">{bonus['main_to_next_bonus_rate']:.2f}%</span>で、どちらも俗説は成立しませんでした。ちなみにボーナス数字が本数字の最小〜最大の範囲内に収まる確率は<span class="num">{bonus['within_range_rate']:.1f}%</span>ですが、これは6個の数字が散らばれば7個目がその間に入りやすいという組み合わせ論の話で、特別な偏りではありません。</p>
+        </div>''',
+    ]
+    return "\n".join(cards)
+
+
 def main():
     print("最新の歴史データを同期中...")
     history = load_cache()
@@ -78,6 +199,7 @@ def main():
             return
 
     data_json = json.dumps(history)
+    trivia_html = build_trivia_html(history)
 
     # HTMLテンプレート（極・完成版デザイン）
     html_content = f"""<!DOCTYPE html>
@@ -95,9 +217,7 @@ def main():
         .ball {{ position: absolute; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 14px; border: 1.1px solid rgba(255, 255, 255, 0.4); box-shadow: 0 4px 8px rgba(0,0,0,0.5), inset -1px -1px 3px rgba(0,0,0,0.3); transition: left 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), top 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.6s; z-index: 10; }}
         .ball.glow-float {{ z-index: 100; transform: scale(1.6) translateY(-25px) !important; background-color: #ffffff !important; color: #000 !important; box-shadow: 0 0 30px #fff, 0 0 50px #ffd700; border-color: #fff; transition: transform 0.4s ease-out, background-color 0.3s !important; }}
         /* 塗り色が近い組み合わせでも判別できるよう、縁取りの色をもう1つの手掛かりにする */
-        .ball.ring-white {{ border-width: 2.5px; border-color: #ffffff; box-shadow: 0 4px 8px rgba(0,0,0,0.5), inset -1px -1px 3px rgba(0,0,0,0.3), 0 0 5px rgba(255,255,255,0.5); }}
-        .ball.ring-black {{ border-width: 2.5px; border-color: #14100b; }}
-        .ball.ring-gold {{ border-width: 2.5px; border-color: #ffd700; box-shadow: 0 4px 8px rgba(0,0,0,0.5), inset -1px -1px 3px rgba(0,0,0,0.3), 0 0 6px rgba(255,215,0,0.55); }}
+        .ball.toned {{ border-width: 3px; box-shadow: 0 4px 8px rgba(0,0,0,0.5), inset -1px -1px 3px rgba(0,0,0,0.3), 0 0 6px rgba(255,255,255,0.15); }}
         .ball.active {{ border-color: #fff; box-shadow: 0 0 12px rgba(255,215,0,0.7); }}
         .bonus-section {{ display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 50px; }}
         .bonus-box {{ display: flex; flex-direction: column; gap: 8px; background: rgba(255, 255, 255, 0.08); padding: 10px; border-radius: 15px; border: 1.5px solid rgba(212, 175, 55, 0.3); align-items: center; }}
@@ -106,14 +226,16 @@ def main():
         .controls {{ position: fixed; bottom: 0; width: 100%; max-width: 480px; background: rgba(15, 10, 7, 0.98); padding: 15px 0 25px 0; display: flex; flex-direction: column; align-items: center; gap: 10px; border-top: 2.5px solid #d4af37; box-shadow: 0 -5px 20px rgba(0,0,0,0.6); }}
         .info-display {{ font-size: 16px; color: #ffd700; font-weight: 900; }}
         .slider-row {{ width: 95%; display: flex; align-items: center; justify-content: center; gap: 4px; }}
+        .speed-row {{ width: 80%; display: flex; align-items: center; gap: 8px; }}
+        .speed-label {{ font-size: 10px; color: #8a7a5c; white-space: nowrap; }}
         input[type=range] {{ flex-grow: 1; accent-color: #ffd700; height: 10px; cursor: pointer; }}
         .btn {{ background: linear-gradient(180deg, #3d2b1f, #1a100a); color: #ffd700; border: 1px solid #ffd700; padding: 7px 12px; border-radius: 12px; font-size: 11px; font-weight: bold; cursor: pointer; min-width: 45px; transition: transform 0.1s; }}
         .btn:active {{ transform: scale(0.92); filter: brightness(0.8); }}
         .btn-main {{ background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border: none; padding: 10px 40px; border-radius: 20px; font-size: 14px; }}
 
         /* --- タブ切り替え --- */
-        .tab-bar {{ display: flex; gap: 6px; width: 100%; max-width: 280px; justify-content: center; margin-bottom: 12px; }}
-        .tab-btn {{ flex: 1; background: transparent; color: #8a7a5c; border: 1px solid rgba(212,175,55,0.35); padding: 8px 0; border-radius: 14px; font-size: 13px; font-weight: bold; cursor: pointer; transition: all 0.2s; }}
+        .tab-bar {{ display: flex; flex-wrap: wrap; gap: 6px; width: 100%; max-width: 340px; justify-content: center; margin-bottom: 12px; }}
+        .tab-btn {{ flex: 1; min-width: 56px; background: transparent; color: #8a7a5c; border: 1px solid rgba(212,175,55,0.35); padding: 8px 4px; border-radius: 14px; font-size: 13px; font-weight: bold; cursor: pointer; transition: all 0.2s; }}
         .tab-btn.active {{ background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border-color: #d4af37; box-shadow: 0 0 12px rgba(212,175,55,0.4); }}
         .tab-panel {{ display: none; width: 100%; flex-direction: column; align-items: center; }}
         .tab-panel.active {{ display: flex; }}
@@ -137,27 +259,26 @@ def main():
         .freq-chip.hot {{ background: #ffd700; color: #1a120b; }}
         .freq-chip.cold {{ background: #5dade2; color: #0a1a2a; }}
         .freq-chip:empty {{ visibility: hidden; }}
-        .freq-view {{ display: none; width: 100%; flex-direction: column; align-items: center; }}
-        .freq-view.active {{ display: flex; }}
 
-        /* --- 座標マップ(固定グリッド・ヒートマップ) --- */
-        .freq-grid {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; width: 100%; max-width: 380px; padding: 0 15px; box-sizing: border-box; }}
-        .freq-cell {{ aspect-ratio: 1; border-radius: 8px; border: 1px solid rgba(212,175,55,0.25); display: flex; flex-direction: column; align-items: center; justify-content: center; }}
-        .freq-cell .cell-num {{ font-size: 13px; font-weight: 900; color: #fff; }}
-        .freq-cell .cell-cnt {{ font-size: 9px; color: rgba(255,255,255,0.75); font-variant-numeric: tabular-nums; }}
-        .col-totals {{ display: flex; gap: 4px; width: 100%; max-width: 380px; padding: 0 15px; box-sizing: border-box; margin-bottom: 190px; }}
-        .col-total-item {{ flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }}
-        .col-total-bar-wrap {{ width: 100%; height: 60px; background: rgba(212,175,55,0.1); border-radius: 4px; display: flex; align-items: flex-end; overflow: hidden; }}
-        .col-total-bar {{ width: 100%; background: linear-gradient(180deg, #ffd700, #b8860b); border-radius: 3px 3px 0 0; transition: height 0.4s ease; }}
-        .col-total-label {{ font-size: 10px; color: #8a7a5c; }}
-        .col-total-value {{ font-size: 11px; color: #ccc; font-variant-numeric: tabular-nums; }}
-
-        /* --- 段 x 列マトリクス --- */
+        /* --- 座標マップ(段 x 列マトリクス) --- */
+        .tier-window-control {{ width: 100%; max-width: 400px; padding: 0 15px; box-sizing: border-box; margin-bottom: 8px; }}
+        .tier-window-row {{ display: flex; align-items: center; gap: 10px; }}
+        .tier-slider {{ flex-grow: 1; accent-color: #d4af37; }}
+        .tier-window-label {{ font-size: 10px; color: #8a7a5c; margin-top: 4px; text-align: center; }}
+        .tier-window-label span {{ color: #ffd700; font-weight: bold; font-variant-numeric: tabular-nums; }}
         .tier-table-wrap {{ width: 100%; max-width: 400px; padding: 4px 15px 190px 15px; box-sizing: border-box; overflow-x: auto; }}
         .tier-table {{ border-collapse: separate; border-spacing: 3px; margin: 0 auto; }}
         .tier-table th {{ font-size: 10px; color: #8a7a5c; font-weight: bold; padding: 2px; }}
         .tier-table td.tier-label {{ font-size: 10px; color: #8a7a5c; text-align: right; padding-right: 4px; white-space: nowrap; }}
+        .tier-total {{ font-size: 9px; color: #ffd700; font-variant-numeric: tabular-nums; }}
         .tier-cell {{ width: 40px; height: 32px; border-radius: 6px; border: 1px solid rgba(212,175,55,0.25); text-align: center; font-size: 11px; color: #fff; font-variant-numeric: tabular-nums; }}
+
+        /* --- トリビア --- */
+        .trivia-list {{ width: 100%; max-width: 400px; padding: 4px 15px 190px 15px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px; }}
+        .trivia-card {{ background: rgba(255,255,255,0.05); border: 1px solid rgba(212,175,55,0.25); border-radius: 12px; padding: 14px 16px; }}
+        .trivia-title {{ margin: 0 0 6px 0; font-size: 13px; color: #ffd700; font-weight: bold; }}
+        .trivia-body {{ margin: 0; font-size: 12px; color: #ddd; line-height: 1.8; }}
+        .trivia-body .num {{ color: #ffd700; font-weight: bold; font-variant-numeric: tabular-nums; }}
 
         /* --- ペア分析 --- */
         .pair-sub {{ display: none; width: 100%; flex-direction: column; align-items: center; }}
@@ -176,8 +297,9 @@ def main():
         <div class="tab-bar">
             <button id="tab-btn-board" class="tab-btn active" onclick="switchTab('board')">盤面</button>
             <button id="tab-btn-freq" class="tab-btn" onclick="switchTab('freq')">頻度</button>
+            <button id="tab-btn-tier" class="tab-btn" onclick="switchTab('tier')">座標</button>
             <button id="tab-btn-pair" class="tab-btn" onclick="switchTab('pair')">ペア</button>
-            <button id="tab-btn-tier" class="tab-btn" onclick="switchTab('tier')">段</button>
+            <button id="tab-btn-trivia" class="tab-btn" onclick="switchTab('trivia')">トリビア</button>
         </div>
         <div id="panel-board" class="tab-panel active">
             <div class="board-wrapper">
@@ -186,23 +308,15 @@ def main():
             </div>
         </div>
         <div id="panel-freq" class="tab-panel">
-            <div class="freq-toggle">
-                <button id="freq-mode-all" class="btn active-toggle" onclick="setFreqMode('all')">全期間</button>
-                <button id="freq-mode-recent100" class="btn" onclick="setFreqMode('recent100')">直近100回</button>
-            </div>
-            <div class="freq-toggle">
-                <button id="freq-view-list" class="btn active-toggle" onclick="setFreqView('list')">リスト表示</button>
-                <button id="freq-view-grid" class="btn" onclick="setFreqView('grid')">座標マップ</button>
+            <div class="tier-window-control">
+                <div class="tier-window-row">
+                    <input type="range" id="freq-window-slider" class="tier-slider" min="10" max="100" step="1" value="100" oninput="setFreqWindow(this.value)">
+                    <button id="freq-window-all" class="btn" onclick="setFreqWindowAll()">全期間</button>
+                </div>
+                <div class="tier-window-label">直近<span id="freq-window-value">100</span>回で集計</div>
             </div>
             <p class="freq-caption" id="freq-caption"></p>
-            <div id="freq-list-section" class="freq-view active">
-                <div class="freq-list" id="freq-list"></div>
-            </div>
-            <div id="freq-grid-section" class="freq-view">
-                <div class="freq-grid" id="freq-grid"></div>
-                <p class="freq-subheading hot">列平均（1番号あたりの平均出現回数）</p>
-                <div class="col-totals" id="col-totals"></div>
-            </div>
+            <div class="freq-list" id="freq-list"></div>
         </div>
         <div id="panel-pair" class="tab-panel">
             <div class="freq-toggle">
@@ -228,14 +342,22 @@ def main():
             </div>
         </div>
         <div id="panel-tier" class="tab-panel">
-            <div class="freq-toggle">
-                <button id="tier-mode-all" class="btn active-toggle" onclick="setTierMode('all')">全期間</button>
-                <button id="tier-mode-recent100" class="btn" onclick="setTierMode('recent100')">直近100回</button>
+            <div class="tier-window-control">
+                <div class="tier-window-row">
+                    <input type="range" id="tier-window-slider" class="tier-slider" min="10" max="100" step="1" value="100" oninput="setTierWindow(this.value)">
+                    <button id="tier-window-all" class="btn" onclick="setTierWindowAll()">全期間</button>
+                </div>
+                <div class="tier-window-label">直近<span id="tier-window-value">100</span>回で集計（動かすと直近何回で色の出方が変わるか見比べられます）</div>
             </div>
             <p class="freq-caption">列(その回の何番目に小さい数字か)×段(何個前の"別の数字"以来この位置にいるか)ごとに、再登場した回数です。</p>
             <p class="freq-caption" id="tier-caption"></p>
             <div class="tier-table-wrap">
                 <table class="tier-table" id="tier-table"></table>
+            </div>
+        </div>
+        <div id="panel-trivia" class="tab-panel">
+            <div class="trivia-list">
+                {trivia_html}
             </div>
         </div>
     </div>
@@ -252,6 +374,11 @@ def main():
             <button class="btn" style="background:#2a1a12" onclick="stepBackward()">◀ 前へ</button>
             <button id="auto-btn" class="btn btn-main" onclick="toggleAuto()">自動再生 / 停止</button>
             <button class="btn" style="background:#2a1a12" onclick="stepForward()">次へ ▶</button>
+        </div>
+        <div class="speed-row">
+            <span class="speed-label">遅い</span>
+            <input type="range" id="auto-speed-slider" class="tier-slider" min="1" max="10" step="1" value="4" oninput="setAutoSpeed(this.value)">
+            <span class="speed-label">速い</span>
         </div>
     </div>
     <script>
@@ -270,13 +397,11 @@ def main():
         // (「上位重視案」で決定): 1 / 2 / 3 / 4 / 5-6 / 7-9 / 10-11+
         const TIER_ROWS = 11; // A段〜K段。それより深い段は最終行「L段+」にまとめる
         const TIER_LABELS = ['A','B','C','D','E','F','G','H','I','J','K','L'];
-        const BAND_COLORS = ['#e52b46', '#de7b29', '#bfa32e', '#29a039', '#207aa6', '#123cef', '#9629e5']; // 赤橙黄緑青藍紫
+        const BAND_COLORS = ['#e52b46', '#de612b', '#d6d13d', '#29a039', '#123cef', '#207aa6', '#9629e5']; // 赤橙黄緑青藍紫(橙黄は隣接段との色相差確保のため調整済み。5-6段目↔7-9段目は「青寄り→水色寄り」の見た目順になるよう入替済み)
         const BAND_TEXT   = ['#ffffff', '#1a120b', '#1a120b', '#1a120b', '#ffffff', '#ffffff', '#ffffff'];
-        const BAND_RING   = ['ring-white', 'ring-white', 'ring-black', 'ring-gold', 'ring-black', 'ring-white', 'ring-black'];
-        // 7色は隣接色だけでなく、色覚の種類によっては離れた色同士(赤↔緑、藍↔紫など)も
-        // 見分けにくくなる組み合わせが残る。そこで「縁取りの色」をもう1つの手掛かりとして
-        // 重ねている(白: 赤・橙・藍 / 黒: 黄・緑・紫 / 金: 青。紛らわしいペアが同じ縁取りに
-        // ならないよう検証済み)。
+        // 縁取りは「自分の背景色を明るくした色」(セルフトーン)。段ごとに縁が全て異なるため、
+        // 白/黒/金を使い回して重複したり黒縁が背景に溶けたりする問題が構造的に起きない。
+        const BAND_RING_COLOR = ['#f3a0ac', '#f0b8a0', '#edeaa8', '#9fd4a6', '#94a7f8', '#9bc3d7', '#d09ff3'];
         // tier(0〜11) → バンド番号(0〜6) の対応表。上4段は1段=1バンド、以降は複数段をまとめる。
         const TIER_TO_BAND = [0, 1, 2, 3, 4, 4, 5, 5, 5, 6, 6, 6];
         const bandOfTier = (tier) => TIER_TO_BAND[tier];
@@ -284,9 +409,9 @@ def main():
         const NEVER_DRAWN_TEXT = '#4a4a4a';
 
         let ballElements = {{}}; let currentIndex = 0; let lastDrawnAt = {{}}; let columns = [[], [], [], [], [], []]; let timer = null;
-        let activeTab = 'board'; let freqMode = 'all'; let freqView = 'list';
+        let activeTab = 'board'; let freqWindowSize = 100;
         let pairMode = 'top20'; let selectedPairNum = null;
-        let tierMode = 'all';
+        let tierWindowSize = 100; // 座標マップの集計対象(直近何回)。renderTierTabで表示回数に合わせてクランプする。
 
         function setup() {{
             const board = document.getElementById('main-board');
@@ -337,17 +462,20 @@ def main():
                     el.style.left = (cIdx * 41 + 10 + overflowDepth * 5) + 'px';
                     el.style.top = (displayRow * 41 + 10 + overflowDepth * 5) + 'px';
                     const freshness = (lastDrawnAt[num] !== -1) ? currentIndex - lastDrawnAt[num] : -1;
-                    el.classList.remove('ring-white', 'ring-black', 'ring-gold');
+                    const isActive = draw.main.includes(num);
                     if (freshness === -1) {{
+                        el.classList.remove('toned');
                         el.style.backgroundColor = NEVER_DRAWN_BG; el.style.color = NEVER_DRAWN_TEXT;
                     }} else {{
                         const tier = Math.min(freshness, TIER_ROWS);
                         const band = bandOfTier(tier);
                         el.style.backgroundColor = BAND_COLORS[band];
                         el.style.color = BAND_TEXT[band];
-                        el.classList.add(BAND_RING[band]);
+                        // 直近の抽選で出た数字(active)は縁を白で最優先表示。それ以外は段のセルフトーン。
+                        el.style.borderColor = isActive ? '#ffffff' : BAND_RING_COLOR[band];
+                        el.classList.add('toned');
                     }}
-                    if (draw.main.includes(num)) el.classList.add('active'); else el.classList.remove('active');
+                    if (isActive) el.classList.add('active'); else el.classList.remove('active');
                 }});
             }});
             const bHist = document.getElementById('bonus-history'); bHist.innerHTML = '';
@@ -376,26 +504,20 @@ def main():
             if (name === 'tier') renderTierTab();
         }}
 
-        function setFreqMode(mode) {{
-            freqMode = mode;
-            document.getElementById('freq-mode-all').classList.toggle('active-toggle', mode === 'all');
-            document.getElementById('freq-mode-recent100').classList.toggle('active-toggle', mode === 'recent100');
+        function setFreqWindow(v) {{
+            freqWindowSize = parseInt(v, 10);
             renderFreqTab();
         }}
 
-        function setFreqView(view) {{
-            freqView = view;
-            document.getElementById('freq-view-list').classList.toggle('active-toggle', view === 'list');
-            document.getElementById('freq-view-grid').classList.toggle('active-toggle', view === 'grid');
-            document.getElementById('freq-list-section').classList.toggle('active', view === 'list');
-            document.getElementById('freq-grid-section').classList.toggle('active', view === 'grid');
+        function setFreqWindowAll() {{
+            freqWindowSize = currentIndex + 1;
             renderFreqTab();
         }}
 
-        function computeFrequency(mode) {{
+        function computeFrequency(windowSize) {{
             const counts = {{}};
             for (let i = 1; i <= 43; i++) counts[i] = 0;
-            const start = (mode === 'recent100') ? Math.max(0, currentIndex - 99) : 0;
+            const start = Math.max(0, currentIndex - windowSize + 1);
             for (let i = start; i <= currentIndex; i++) {{
                 fullData[i].main.forEach(n => counts[n]++);
             }}
@@ -440,62 +562,26 @@ def main():
             }});
         }}
 
-        function renderFreqGrid(counts) {{
-            const values = [];
-            for (let i = 1; i <= 43; i++) values.push(counts[i]);
-            const minC = Math.min(...values), maxC = Math.max(...values);
-
-            const grid = document.getElementById('freq-grid');
-            grid.innerHTML = '';
-            for (let i = 1; i <= 43; i++) {{
-                const cell = document.createElement('div');
-                cell.className = 'freq-cell';
-                const t = (maxC > minC) ? (counts[i] - minC) / (maxC - minC) : 0.5;
-                const alpha = 0.12 + t * 0.85;
-                cell.style.background = `rgba(212,175,55,${{alpha.toFixed(3)}})`;
-                const numEl = document.createElement('div'); numEl.className = 'cell-num'; numEl.innerText = i;
-                const cntEl = document.createElement('div'); cntEl.className = 'cell-cnt'; cntEl.innerText = counts[i];
-                cell.appendChild(numEl); cell.appendChild(cntEl);
-                grid.appendChild(cell);
-            }}
-
-            // 列平均: 盤面と同じ列定義 (col = (番号-1) % 6) で1〜6列目ごとに集計。
-            // 1列目だけ番号が8個(他は7個)含まれ単純合計では不公平になるため、1番号あたりの平均で比較する。
-            const colTotals = [0, 0, 0, 0, 0, 0];
-            const colCounts = [0, 0, 0, 0, 0, 0];
-            for (let i = 1; i <= 43; i++) {{
-                colTotals[(i - 1) % 6] += counts[i];
-                colCounts[(i - 1) % 6]++;
-            }}
-            const colAverages = colTotals.map((t, idx) => t / colCounts[idx]);
-            const maxColAvg = Math.max(...colAverages);
-            const wrap = document.getElementById('col-totals');
-            wrap.innerHTML = '';
-            colAverages.forEach((avg, idx) => {{
-                const item = document.createElement('div'); item.className = 'col-total-item';
-                const barWrap = document.createElement('div'); barWrap.className = 'col-total-bar-wrap';
-                const bar = document.createElement('div'); bar.className = 'col-total-bar';
-                bar.style.height = (maxColAvg > 0 ? (avg / maxColAvg * 100) : 0) + '%';
-                barWrap.appendChild(bar);
-                const label = document.createElement('div'); label.className = 'col-total-label'; label.innerText = (idx + 1) + '列目';
-                const value = document.createElement('div'); value.className = 'col-total-value'; value.innerText = avg.toFixed(1);
-                item.appendChild(barWrap); item.appendChild(label); item.appendChild(value);
-                wrap.appendChild(item);
-            }});
-        }}
-
         function renderFreqTab() {{
             if (fullData.length === 0) return;
-            const {{ counts, start }} = computeFrequency(freqMode);
 
-            if (freqView === 'list') renderFreqList(counts);
-            else renderFreqGrid(counts);
+            const totalDraws = currentIndex + 1;
+            const sliderEl = document.getElementById('freq-window-slider');
+            sliderEl.min = Math.min(10, totalDraws);
+            sliderEl.max = totalDraws;
+            if (freqWindowSize > totalDraws) freqWindowSize = totalDraws;
+            sliderEl.value = freqWindowSize;
+            document.getElementById('freq-window-value').innerText = freqWindowSize;
+
+            const {{ counts, start }} = computeFrequency(freqWindowSize);
+
+            renderFreqList(counts);
 
             const caption = document.getElementById('freq-caption');
             const drawCount = currentIndex - start + 1;
-            caption.innerText = (freqMode === 'recent100')
-                ? `直近${{drawCount}}回（第${{fullData[start].id}}回〜第${{fullData[currentIndex].id}}回）`
-                : `全期間（第${{fullData[start].id}}回〜第${{fullData[currentIndex].id}}回、${{drawCount}}回分）`;
+            caption.innerText = (freqWindowSize >= totalDraws)
+                ? `全期間（第${{fullData[start].id}}回〜第${{fullData[currentIndex].id}}回、${{drawCount}}回分）`
+                : `直近${{drawCount}}回（第${{fullData[start].id}}回〜第${{fullData[currentIndex].id}}回）`;
         }}
 
         function setPairMode(mode) {{
@@ -643,23 +729,26 @@ def main():
             }}
         }}
 
-        function setTierMode(mode) {{
-            tierMode = mode;
-            document.getElementById('tier-mode-all').classList.toggle('active-toggle', mode === 'all');
-            document.getElementById('tier-mode-recent100').classList.toggle('active-toggle', mode === 'recent100');
+        function setTierWindow(v) {{
+            tierWindowSize = parseInt(v, 10);
+            renderTierTab();
+        }}
+
+        function setTierWindowAll() {{
+            tierWindowSize = currentIndex + 1;
             renderTierTab();
         }}
 
         // 盤面の実アルゴリズム(列=その回の昇順順位、段=同じ座標を最後に明け渡してからの深さ)を
         // 第1回から忠実に再生し、「(列, 段)座標で再登場が起きた回数」を集計する。
-        // 直近100回モードでも、座標の状態を正しく保つため必ず第1回からシミュレートし、
-        // 集計対象(タリー)だけを対象期間に絞る。
-        function computeTierMatrix(mode) {{
+        // windowSizeを絞った場合でも、座標の状態を正しく保つため必ず第1回からシミュレートし、
+        // 集計対象(タリー)だけを直近windowSize回に絞る。
+        function computeTierMatrix(windowSize) {{
             const cols = [[], [], [], [], [], []];
             for (let i = 1; i <= 43; i++) cols[(i - 1) % 6].push(i);
             const seenBefore = new Set();
             const matrix = {{}};
-            const windowStart = (mode === 'recent100') ? Math.max(0, currentIndex - 99) : 0;
+            const windowStart = Math.max(0, currentIndex - windowSize + 1);
 
             for (let idx = 0; idx <= currentIndex; idx++) {{
                 const m = fullData[idx].main;
@@ -691,10 +780,32 @@ def main():
 
         function renderTierTab() {{
             if (fullData.length === 0) return;
-            const matrix = computeTierMatrix(tierMode);
+
+            // スライダーの範囲は「今表示中の回までの総数」に追従させる。表示中の回を
+            // 遡ると総数が減るので、選択中のwindowSizeがそれを超えていたら詰める。
+            const totalDraws = currentIndex + 1;
+            const sliderEl = document.getElementById('tier-window-slider');
+            sliderEl.min = Math.min(10, totalDraws);
+            sliderEl.max = totalDraws;
+            if (tierWindowSize > totalDraws) tierWindowSize = totalDraws;
+            sliderEl.value = tierWindowSize;
+            document.getElementById('tier-window-value').innerText = tierWindowSize;
+
+            const matrix = computeTierMatrix(tierWindowSize);
 
             const values = Object.values(matrix);
             const maxV = values.length ? Math.max(...values) : 1;
+
+            // 段ごと・列ごとの合計(行/列マージン)。
+            const rowTotals = new Array(TIER_ROWS + 1).fill(0);
+            const colTotals = new Array(6).fill(0);
+            for (let row = 0; row <= TIER_ROWS; row++) {{
+                for (let c = 0; c < 6; c++) {{
+                    const v = matrix[c + '-' + row] || 0;
+                    rowTotals[row] += v;
+                    colTotals[c] += v;
+                }}
+            }}
 
             const table = document.getElementById('tier-table');
             table.innerHTML = '';
@@ -702,7 +813,10 @@ def main():
             const headRow = document.createElement('tr');
             headRow.appendChild(document.createElement('th'));
             for (let c = 1; c <= 6; c++) {{
-                const th = document.createElement('th'); th.innerText = c + '列目';
+                const th = document.createElement('th');
+                const labelDiv = document.createElement('div'); labelDiv.innerText = c + '列目';
+                const totalDiv = document.createElement('div'); totalDiv.className = 'tier-total'; totalDiv.innerText = colTotals[c - 1];
+                th.appendChild(labelDiv); th.appendChild(totalDiv);
                 headRow.appendChild(th);
             }}
             table.appendChild(headRow);
@@ -710,7 +824,10 @@ def main():
             for (let row = 0; row <= TIER_ROWS; row++) {{
                 const tr = document.createElement('tr');
                 const labelTd = document.createElement('td'); labelTd.className = 'tier-label';
-                labelTd.innerText = TIER_LABELS[row] + '段' + (row === TIER_ROWS ? '+' : '');
+                const labelDiv = document.createElement('div');
+                labelDiv.innerText = TIER_LABELS[row] + '段' + (row === TIER_ROWS ? '+' : '');
+                const totalDiv = document.createElement('div'); totalDiv.className = 'tier-total'; totalDiv.innerText = rowTotals[row];
+                labelTd.appendChild(labelDiv); labelTd.appendChild(totalDiv);
                 tr.appendChild(labelTd);
                 for (let c = 0; c < 6; c++) {{
                     const v = matrix[c + '-' + row] || 0;
@@ -723,9 +840,9 @@ def main():
                 table.appendChild(tr);
             }}
 
-            document.getElementById('tier-caption').innerText = (tierMode === 'recent100')
-                ? `直近${{Math.min(currentIndex + 1, 100)}}回（第${{fullData[Math.max(0, currentIndex - 99)].id}}回〜第${{fullData[currentIndex].id}}回）`
-                : `全期間（第1回〜第${{fullData[currentIndex].id}}回）`;
+            document.getElementById('tier-caption').innerText = (tierWindowSize >= totalDraws)
+                ? `全期間（第1回〜第${{fullData[currentIndex].id}}回、${{totalDraws}}回分）`
+                : `直近${{tierWindowSize}}回（第${{fullData[Math.max(0, currentIndex - tierWindowSize + 1)].id}}回〜第${{fullData[currentIndex].id}}回）`;
         }}
 
         async function stepForward() {{
@@ -748,9 +865,22 @@ def main():
         }}
 
         function jump(s) {{ seekTo(currentIndex + s); }}
+
+        // 自動再生の間隔(ms)。スライダーの1(遅い)〜10(速い)に対応。
+        const AUTO_INTERVALS = [3000, 2600, 2200, 1800, 1500, 1200, 900, 700, 500, 350];
+        let autoSpeed = 4; // 既定値(1800ms)は変更前の速度と同じ
+
+        function startAutoTimer() {{
+            if (timer) clearInterval(timer);
+            timer = setInterval(() => {{ if(currentIndex < fullData.length - 1) stepForward(); else toggleAuto(); }}, AUTO_INTERVALS[autoSpeed - 1]);
+        }}
         function toggleAuto() {{
             if(timer) {{ clearInterval(timer); timer = null; }}
-            else {{ timer = setInterval(() => {{ if(currentIndex < fullData.length - 1) stepForward(); else toggleAuto(); }}, 1800); }}
+            else {{ startAutoTimer(); }}
+        }}
+        function setAutoSpeed(v) {{
+            autoSpeed = parseInt(v, 10);
+            if (timer) startAutoTimer(); // 再生中ならその場で速度を切り替える
         }}
         setup();
         setupNumPicker();
