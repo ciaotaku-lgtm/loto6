@@ -1,0 +1,32 @@
+name: Update loto6 data
+
+# ロト6の抽選日(毎週月曜・木曜)の翌朝に自動実行。
+# 手動実行(workflow_dispatch)もできる。
+on:
+  schedule:
+    - cron: '0 21 * * 1,4'  # UTC 21:00 = JST 翌6:00 (月・木の抽選翌朝)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 最新データを取得してHTMLを再生成
+        run: python3 make_loto.py
+
+      - name: 変更があればコミット&プッシュ
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add loto6_history.json loto_analysis.html
+          git diff --cached --quiet || git commit -m "chore: 最新の抽選結果を自動反映"
+          git push
