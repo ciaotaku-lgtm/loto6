@@ -1,10 +1,14 @@
 name: Update loto6 data
 
-# ロト6の抽選日(毎週月曜・木曜)の翌朝に自動実行。
+# ロト6の抽選は毎週月曜・木曜の18:45(JST)。
+# データ提供元のCSV更新が抽選翌朝に間に合わないことがあるため、
+# 抽選翌日は朝・昼・夕方の3回試す（変更がなければコミットしないので空振りは無害）。
 # 手動実行(workflow_dispatch)もできる。
 on:
   schedule:
-    - cron: '0 21 * * 1,4'  # UTC 21:00 = JST 翌6:00 (月・木の抽選翌朝)
+    - cron: '0 21 * * 1,4'   # UTC 21:00 = JST 翌 6:00（抽選翌朝）
+    - cron: '0 3 * * 2,5'    # UTC 03:00 = JST 当日12:00（取りこぼしの再試行）
+    - cron: '0 9 * * 2,5'    # UTC 09:00 = JST 当日18:00（さらに再試行）
   workflow_dispatch: {}
 
 permissions:
@@ -30,3 +34,13 @@ jobs:
           git add loto6_history.json loto_analysis.html
           git diff --cached --quiet || git commit -m "chore: 最新の抽選結果を自動反映"
           git push
+
+      # 取得に失敗してもスクリプトはキャッシュで続行するため、Actionsは成功扱いになる。
+      # 取りこぼしに気づけるよう、直近の抽選日まで追いつけたかを明示的に出す。
+      - name: 最新回まで取り込めたか確認
+        run: |
+          msg=$(python3 -c "import json, make_loto; ok, m = make_loto.check_freshness(json.load(open(make_loto.CACHE_FILE))); print(('OK|' if ok else 'STALE|') + m)")
+          echo "${msg#*|}" >> "$GITHUB_STEP_SUMMARY"
+          case "$msg" in
+            STALE*) echo "::warning::${msg#*|}" ;;
+          esac

@@ -1,5 +1,6 @@
 import urllib.request
 import csv
+import datetime
 import json
 import io
 import os
@@ -58,6 +59,48 @@ def fetch_latest():
     # 時系列（古い順）に並べ替え
     history.sort(key=lambda x: x["id"])
     return history
+
+
+def latest_expected_draw_date():
+    """JSTの「今」から見て、すでに抽選が終わっているはずの直近の抽選日を返す。
+    ロト6の抽選は毎週月曜・木曜の18:45(JST)。結果反映の余裕をみて19:30を過ぎたら
+    その日の分は出ているものとして扱う。"""
+    jst = datetime.timezone(datetime.timedelta(hours=9))
+    now = datetime.datetime.now(jst)
+    d = now.date()
+    if not (now.hour > 19 or (now.hour == 19 and now.minute >= 30)):
+        d -= datetime.timedelta(days=1)
+    while d.weekday() not in (0, 3):  # 0=月, 3=木
+        d -= datetime.timedelta(days=1)
+    return d
+
+
+def check_freshness(history):
+    """手元のデータが直近の抽選日まで追いついているかを判定する。
+    データ提供元のCSV更新が遅れると取りこぼしたまま気づけないため、
+    (追いついているか, 人間向けメッセージ) を返して呼び出し側に知らせる。"""
+    expected = latest_expected_draw_date()
+    if not history:
+        return False, "データが1件もありません。"
+    latest = history[-1]
+    try:
+        y, m, d = (int(x) for x in latest["date"].split("/"))
+        latest_date = datetime.date(y, m, d)
+    except (ValueError, KeyError):
+        return False, f"最新回の日付「{latest.get('date')}」を解釈できませんでした。"
+    if latest_date >= expected:
+        return True, f"最新回まで取り込み済みです（第{latest['id']}回 / {latest['date']}）。"
+    behind = 0
+    d = expected
+    while d > latest_date:
+        if d.weekday() in (0, 3):
+            behind += 1
+        d -= datetime.timedelta(days=1)
+    return False, (
+        f"直近の抽選日({expected:%Y/%m/%d})の分がまだ入っていません"
+        f"（手元の最新は第{latest['id']}回 / {latest['date']}、{behind}回分の遅れ）。"
+        "データ提供元のCSV更新待ちの可能性が高く、次回の実行で自動的に追いつきます。"
+    )
 
 
 def compute_tier_distribution(history):
@@ -150,6 +193,69 @@ def compute_bonus_trivia(history):
     }
 
 
+def compute_quickpick_stats(history):
+    """クイックピックの条件判定と診断表示に使う、実データ側の分布をまとめて計算する。
+    ここで出した割合が「この目は過去の何%と同じ形か」の根拠になる。"""
+    n = len(history)
+    if not n:
+        return {}
+    pct = lambda c: c / n * 100
+
+    sums = sorted(sum(d["main"]) for d in history)
+    band = 10
+    sum_bands = {}
+    for s in sums:
+        key = s // band * band
+        sum_bands[key] = sum_bands.get(key, 0) + 1
+    quantile = lambda p: sums[min(n - 1, int(n * p))]
+
+    odd = [0] * 7
+    low = [0] * 7
+    birthday = [0] * 7
+    max_run = [0] * 7
+    consec_pairs = [0] * 6
+    last_digit = [0] * 7
+    for d in history:
+        m = d["main"]
+        odd[sum(1 for x in m if x % 2)] += 1
+        low[sum(1 for x in m if x <= 21)] += 1
+        birthday[sum(1 for x in m if x <= 31)] += 1
+        run = best = 1
+        pairs = 0
+        for a, b in zip(m, m[1:]):
+            if b == a + 1:
+                run += 1
+                pairs += 1
+            else:
+                run = 1
+            best = max(best, run)
+        max_run[best] += 1
+        consec_pairs[pairs] += 1
+        digits = {}
+        for x in m:
+            digits[x % 10] = digits.get(x % 10, 0) + 1
+        last_digit[max(digits.values())] += 1
+
+    return {
+        "n": n,
+        "sumMedian": sums[n // 2],
+        "sumMin": sums[0],
+        "sumMax": sums[-1],
+        "sumP10": quantile(0.10),
+        "sumP25": quantile(0.25),
+        "sumP75": quantile(0.75),
+        "sumP90": quantile(0.90),
+        "sumBand": band,
+        "sumBands": {str(k): pct(v) for k, v in sorted(sum_bands.items())},
+        "odd": [pct(c) for c in odd],
+        "low": [pct(c) for c in low],
+        "birthday": [pct(c) for c in birthday],
+        "maxRun": [pct(c) for c in max_run],
+        "consecPairs": [pct(c) for c in consec_pairs],
+        "lastDigit": [pct(c) for c in last_digit],
+    }
+
+
 def build_trivia_html(history):
     """座標分布の形・連続未出記録・ボーナス俗説の検証を、トリビアタブ用のHTMLカードにする。"""
     tier_counts, tier_total = compute_tier_distribution(history)
@@ -198,7 +304,11 @@ def main():
             print(f"致命的エラー: ネットワークにも接続できず、ローカルキャッシュも見つかりません: {e}")
             return
 
+    is_fresh, freshness_msg = check_freshness(history)
+    print(("\u2713 " if is_fresh else "\u26a0 ") + freshness_msg)
+
     data_json = json.dumps(history)
+    qp_stats_json = json.dumps(compute_quickpick_stats(history))
     trivia_html = build_trivia_html(history)
 
     # HTMLテンプレート（極・完成版デザイン）
@@ -234,8 +344,8 @@ def main():
         .btn-main {{ background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border: none; padding: 10px 40px; border-radius: 20px; font-size: 14px; }}
 
         /* --- タブ切り替え --- */
-        .tab-bar {{ display: flex; flex-wrap: wrap; gap: 6px; width: 100%; max-width: 340px; justify-content: center; margin-bottom: 12px; }}
-        .tab-btn {{ flex: 1; min-width: 56px; background: transparent; color: #8a7a5c; border: 1px solid rgba(212,175,55,0.35); padding: 8px 4px; border-radius: 14px; font-size: 13px; font-weight: bold; cursor: pointer; transition: all 0.2s; }}
+        .tab-bar {{ display: flex; flex-wrap: wrap; gap: 5px; width: 100%; max-width: 430px; justify-content: center; margin-bottom: 12px; }}
+        .tab-btn {{ flex: 1; min-width: 50px; background: transparent; color: #8a7a5c; border: 1px solid rgba(212,175,55,0.35); padding: 8px 4px; border-radius: 14px; font-size: 13px; font-weight: bold; cursor: pointer; transition: all 0.2s; }}
         .tab-btn.active {{ background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border-color: #d4af37; box-shadow: 0 0 12px rgba(212,175,55,0.4); }}
         .tab-panel {{ display: none; width: 100%; flex-direction: column; align-items: center; }}
         .tab-panel.active {{ display: flex; }}
@@ -275,6 +385,40 @@ def main():
 
         /* --- トリビア --- */
         .trivia-list {{ width: 100%; max-width: 400px; padding: 4px 15px 190px 15px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px; }}
+        .qp-wrap {{ width: 100%; max-width: 400px; padding: 0 15px; box-sizing: border-box; }}
+        .qp-preset-bar {{ display: flex; gap: 6px; justify-content: center; margin-bottom: 6px; }}
+        .qp-preset-bar .btn {{ flex: 1; padding: 9px 4px; font-size: 11px; line-height: 1.5; }}
+        .qp-custom {{ width: 100%; max-width: 400px; box-sizing: border-box; padding: 0 15px; margin-bottom: 10px; }}
+        .qp-custom > summary {{ list-style: none; cursor: pointer; font-size: 12px; color: #8a7a5c; text-align: center; padding: 6px 0; border: 1px dashed rgba(212,175,55,0.3); border-radius: 10px; }}
+        .qp-custom > summary::-webkit-details-marker {{ display: none; }}
+        .qp-custom[open] > summary {{ color: #ffd700; border-style: solid; }}
+        .qp-cond {{ display: flex; flex-direction: column; gap: 10px; padding: 12px 2px 4px 2px; }}
+        .qp-cond-label {{ font-size: 11px; color: #ffd700; font-weight: bold; margin-bottom: 4px; }}
+        .qp-cond-opts {{ display: flex; gap: 4px; }}
+        .qp-cond-opts .btn {{ flex: 1; min-width: 0; padding: 6px 2px; font-size: 10px; }}
+        .qp-cond-opts .btn .qp-hint {{ display: block; font-size: 8px; font-weight: normal; opacity: 0.75; margin-top: 1px; }}
+        .qp-draw-btn {{ width: 100%; max-width: 370px; margin: 4px 0 14px 0; padding: 13px 0; font-size: 14px; font-weight: bold; color: #1a120b; background: linear-gradient(180deg, #ffd700, #b8860b); border: none; border-radius: 14px; cursor: pointer; box-shadow: 0 0 14px rgba(212,175,55,0.35); }}
+        .qp-draw-btn:active {{ transform: scale(0.98); }}
+        .qp-balls {{ display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; min-height: 44px; margin-bottom: 12px; }}
+        .qp-ball {{ width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 16px; color: #1a120b; background: radial-gradient(circle at 32% 28%, #fff2b0, #e5c100 55%, #a8790a); border: 1.5px solid #ffe97a; box-shadow: 0 3px 8px rgba(0,0,0,0.6); animation: qp-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both; }}
+        @keyframes qp-pop {{ from {{ transform: scale(0.3); opacity: 0; }} to {{ transform: scale(1); opacity: 1; }} }}
+        .qp-ball.hot {{ background: radial-gradient(circle at 32% 28%, #ffd0a0, #ff7a2f 55%, #a33c00); border-color: #ffb27a; color: #2a1000; }}
+        .qp-diagnosis {{ width: 100%; max-width: 400px; box-sizing: border-box; padding: 0 15px; display: flex; flex-direction: column; gap: 7px; }}
+        .qp-diag-head {{ font-size: 12px; font-weight: bold; color: #ffd700; border-bottom: 1px solid rgba(212,175,55,0.3); padding-bottom: 5px; margin-bottom: 2px; }}
+        .qp-diag-note {{ font-size: 10px; color: #6a5a42; line-height: 1.6; margin: -2px 0 4px 0; }}
+        .qp-diag-row {{ display: flex; align-items: center; gap: 7px; font-size: 11px; }}
+        .qp-diag-name {{ width: 62px; min-width: 62px; color: #8a7a5c; }}
+        .qp-diag-val {{ width: 88px; min-width: 88px; font-size: 10px; color: #fff; font-weight: bold; font-variant-numeric: tabular-nums; }}
+        .qp-diag-bar-wrap {{ flex-grow: 1; height: 11px; background: rgba(212,175,55,0.12); border-radius: 3px; overflow: hidden; }}
+        .qp-diag-bar {{ height: 100%; background: linear-gradient(90deg, #b8860b, #ffd700); transition: width 0.4s ease; }}
+        .qp-diag-pct {{ width: 62px; min-width: 62px; text-align: right; color: #ccc; font-variant-numeric: tabular-nums; }}
+        .qp-diag-row.top .qp-diag-val {{ color: #ffd700; }}
+        .qp-diag-row.top .qp-diag-pct::after {{ content: " ★"; color: #ffd700; }}
+        .qp-score {{ margin-top: 6px; padding: 10px 12px; border: 1px solid rgba(212,175,55,0.3); border-radius: 12px; background: rgba(255,255,255,0.04); display: flex; align-items: baseline; justify-content: center; gap: 8px; }}
+        .qp-score-num {{ font-size: 26px; font-weight: 900; color: #ffd700; font-variant-numeric: tabular-nums; }}
+        .qp-score-label {{ font-size: 11px; color: #8a7a5c; }}
+        .qp-warn {{ font-size: 11px; color: #e8a33d; text-align: center; padding: 0 15px; margin: 0 0 8px 0; }}
+        .qp-note {{ margin-bottom: 190px !important; line-height: 1.7; }}
         .trivia-card {{ background: rgba(255,255,255,0.05); border: 1px solid rgba(212,175,55,0.25); border-radius: 12px; padding: 14px 16px; }}
         .trivia-title {{ margin: 0 0 6px 0; font-size: 13px; color: #ffd700; font-weight: bold; }}
         .trivia-body {{ margin: 0; font-size: 12px; color: #ddd; line-height: 1.8; }}
@@ -299,6 +443,7 @@ def main():
             <button id="tab-btn-freq" class="tab-btn" onclick="switchTab('freq')">頻度</button>
             <button id="tab-btn-tier" class="tab-btn" onclick="switchTab('tier')">座標</button>
             <button id="tab-btn-pair" class="tab-btn" onclick="switchTab('pair')">ペア</button>
+            <button id="tab-btn-qp" class="tab-btn" onclick="switchTab('qp')">予想</button>
             <button id="tab-btn-trivia" class="tab-btn" onclick="switchTab('trivia')">トリビア</button>
         </div>
         <div id="panel-board" class="tab-panel active">
@@ -354,6 +499,25 @@ def main():
             <div class="tier-table-wrap">
                 <table class="tier-table" id="tier-table"></table>
             </div>
+        </div>
+        <div id="panel-qp" class="tab-panel">
+            <div class="qp-wrap">
+                <div class="qp-preset-bar">
+                    <button id="qp-preset-btn-random" class="btn" onclick="setQpPreset('random')">🎲 大穴狙い<br>完全ランダム</button>
+                    <button id="qp-preset-btn-strict" class="btn" onclick="setQpPreset('strict')">📊 統計重視<br>ガチガチ</button>
+                    <button id="qp-preset-btn-hot" class="btn" onclick="setQpPreset('hot')">🔥 直近10回<br>ホット重視</button>
+                </div>
+            </div>
+            <p class="freq-caption" id="qp-preset-desc"></p>
+            <details class="qp-custom">
+                <summary>カスタム条件を開く（プリセットから自由に変えられます）</summary>
+                <div class="qp-cond" id="qp-cond"></div>
+            </details>
+            <button class="qp-draw-btn" onclick="drawQuickPick()">この条件で引く</button>
+            <p class="qp-warn" id="qp-warn" style="display:none"></p>
+            <div class="qp-balls" id="qp-balls"></div>
+            <div class="qp-diagnosis" id="qp-diagnosis"></div>
+            <p class="freq-caption qp-note">※ どの条件で選んでも1等の当選確率は 1/6,096,454 のまま変わりません。条件は「過去の出目らしさ」を再現して楽しむためのものです。唯一実利があるのは、他の購入者と目が重なりにくくなる＝当たったときの山分け人数が減る、という点だけです。</p>
         </div>
         <div id="panel-trivia" class="tab-panel">
             <div class="trivia-list">
@@ -493,6 +657,288 @@ def main():
             if (activeTab === 'tier') renderTierTab();
         }}
 
+        // ===== クイックピック（予想タブ） =====
+        // 分布はPython側で全データから計算済みのものを埋め込んでいる。
+        const QP_STATS = {qp_stats_json};
+        const QP_HOT_WINDOW = 10;
+        let qpPreset = 'random';
+        let qpChoice = {{}};
+        let qpLast = null;
+
+        function qpSums() {{
+            if (!qpSums._cache) qpSums._cache = fullData.map(d => d.main.reduce((a, b) => a + b, 0));
+            return qpSums._cache;
+        }}
+
+        function qpSumRangePct(lo, hi) {{
+            const s = qpSums();
+            return s.filter(v => v >= lo && v <= hi).length / s.length * 100;
+        }}
+
+        // 直近N回で2回以上出た番号を「ホット」とみなす（頻度タブの見方と揃えている）。
+        function qpHotNumbers() {{
+            if (!qpHotNumbers._cache) {{
+                const counts = {{}};
+                fullData.slice(-QP_HOT_WINDOW).forEach(d => d.main.forEach(n => counts[n] = (counts[n] || 0) + 1));
+                qpHotNumbers._cache = Object.keys(counts).filter(n => counts[n] >= 2).map(Number).sort((a, b) => a - b);
+            }}
+            return qpHotNumbers._cache;
+        }}
+
+        function qpFeatures(m) {{
+            let sum = 0, odd = 0, low = 0, birthday = 0;
+            for (const x of m) {{
+                sum += x;
+                if (x % 2) odd++;
+                if (x <= 21) low++;
+                if (x <= 31) birthday++;
+            }}
+            let run = 1, maxRun = 1, pairs = 0;
+            const runNums = [];
+            for (let i = 1; i < m.length; i++) {{
+                if (m[i] === m[i - 1] + 1) {{ run++; pairs++; runNums.push(m[i - 1] + '-' + m[i]); }}
+                else run = 1;
+                if (run > maxRun) maxRun = run;
+            }}
+            const byDigit = {{}};
+            m.forEach(x => (byDigit[x % 10] = byDigit[x % 10] || []).push(x));
+            let dup = 1;
+            const dupGroups = [];
+            Object.keys(byDigit).forEach(d => {{
+                const g = byDigit[d];
+                if (g.length > dup) dup = g.length;
+                if (g.length >= 2) dupGroups.push(g.join('・') + '(末' + d + ')');
+            }});
+            const hot = qpHotNumbers();
+            return {{
+                sum, odd, low, birthday, maxRun, pairs, dup, runNums, dupGroups,
+                hotCount: m.filter(x => hot.indexOf(x) >= 0).length
+            }};
+        }}
+
+        // 条件の定義。hintには「過去の何%がその条件に当てはまるか」を出して、
+        // 選んでいる条件がどれくらい普通/珍しいのかが分かるようにしている。
+        function qpCondDefs() {{
+            const hot = qpHotNumbers();
+            const pctOf = arr => idx => arr[idx].toFixed(1) + '%';
+            const rawSum = (arr, from, to) => {{
+                let t = 0;
+                for (let i = from; i <= to; i++) t += arr[i];
+                return t;
+            }};
+            const sumOf = (arr, from, to) => rawSum(arr, from, to).toFixed(1) + '%';
+            const skewOf = arr => (rawSum(arr, 0, 1) + rawSum(arr, 5, 6)).toFixed(1) + '%';
+            return [
+                {{ key: 'sum', label: '合計値（過去の中央値は ' + QP_STATS.sumMedian + '）', opts: [
+                    {{ v: 'any', label: 'おまかせ', hint: '制限なし', test: null }},
+                    {{ v: 'loose', label: '90〜174', hint: qpSumRangePct(90, 174).toFixed(1) + '%', test: f => f.sum >= 90 && f.sum <= 174 }},
+                    {{ v: 'normal', label: '100〜164', hint: qpSumRangePct(100, 164).toFixed(1) + '%', test: f => f.sum >= 100 && f.sum <= 164 }},
+                    {{ v: 'tight', label: '110〜154', hint: qpSumRangePct(110, 154).toFixed(1) + '%', test: f => f.sum >= 110 && f.sum <= 154 }}
+                ]}},
+                {{ key: 'odd', label: '奇数と偶数のバランス', opts: [
+                    {{ v: 'any', label: 'おまかせ', hint: '制限なし', test: null }},
+                    {{ v: 'even', label: '3 : 3', hint: pctOf(QP_STATS.odd)(3), test: f => f.odd === 3 }},
+                    {{ v: 'near', label: '2:4 〜 4:2', hint: sumOf(QP_STATS.odd, 2, 4), test: f => f.odd >= 2 && f.odd <= 4 }},
+                    {{ v: 'skew', label: '偏らせる', hint: skewOf(QP_STATS.odd), test: f => f.odd <= 1 || f.odd >= 5 }}
+                ]}},
+                {{ key: 'low', label: '低位(1〜21)と高位(22〜43)のバランス', opts: [
+                    {{ v: 'any', label: 'おまかせ', hint: '制限なし', test: null }},
+                    {{ v: 'even', label: '3 : 3', hint: pctOf(QP_STATS.low)(3), test: f => f.low === 3 }},
+                    {{ v: 'near', label: '2:4 〜 4:2', hint: sumOf(QP_STATS.low, 2, 4), test: f => f.low >= 2 && f.low <= 4 }},
+                    {{ v: 'skew', label: '偏らせる', hint: skewOf(QP_STATS.low), test: f => f.low <= 1 || f.low >= 5 }}
+                ]}},
+                {{ key: 'run', label: '連続する数字（23-24 のような並び）', opts: [
+                    {{ v: 'any', label: 'おまかせ', hint: '制限なし', test: null }},
+                    {{ v: 'yes', label: '必ず入れる', hint: (100 - QP_STATS.maxRun[1]).toFixed(1) + '%', test: f => f.pairs >= 1 }},
+                    {{ v: 'three', label: '3連続', hint: sumOf(QP_STATS.maxRun, 3, 6), test: f => f.maxRun >= 3 }},
+                    {{ v: 'no', label: '入れない', hint: QP_STATS.maxRun[1].toFixed(1) + '%', test: f => f.pairs === 0 }}
+                ]}},
+                {{ key: 'digit', label: '下一桁の被り（7と17 のような引っ掛け）', opts: [
+                    {{ v: 'any', label: 'おまかせ', hint: '制限なし', test: null }},
+                    {{ v: 'yes', label: '必ず入れる', hint: (100 - QP_STATS.lastDigit[1]).toFixed(1) + '%', test: f => f.dup >= 2 }},
+                    {{ v: 'three', label: '3つ被り', hint: sumOf(QP_STATS.lastDigit, 3, 6), test: f => f.dup >= 3 }},
+                    {{ v: 'no', label: '入れない', hint: QP_STATS.lastDigit[1].toFixed(1) + '%', test: f => f.dup === 1 }}
+                ]}},
+                {{ key: 'hot', label: '直近' + QP_HOT_WINDOW + '回のホット番号（現在 ' + hot.length + ' 個: ' + hot.join(' ') + '）', opts: [
+                    {{ v: 'any', label: '使わない', hint: '制限なし', test: null }},
+                    {{ v: '2', label: '2個以上', hint: '', test: f => f.hotCount >= 2 }},
+                    {{ v: '3', label: '3個以上', hint: '', test: f => f.hotCount >= 3 }},
+                    {{ v: '4', label: '4個以上', hint: '', test: f => f.hotCount >= 4 }}
+                ]}}
+            ];
+        }}
+
+        const QP_PRESETS = {{
+            random: {{
+                desc: '条件を一切かけず、43個から6個を等確率で引きます。過去の傾向を無視するぶん「誰も選ばない形」も出ます。当選確率はどの方式でも同じなので、これがいちばん素直な引き方です。',
+                choice: {{ sum: 'any', odd: 'any', low: 'any', run: 'any', digit: 'any', hot: 'any' }}
+            }},
+            strict: {{
+                desc: '過去2000回超でいちばん出やすかった形に全部そろえます（合計110〜154・奇偶3:3・高低3:3・連続あり・下一桁の被りあり）。この5条件を同時に満たした回は過去に約4%あります。',
+                choice: {{ sum: 'tight', odd: 'even', low: 'even', run: 'yes', digit: 'yes', hot: 'any' }}
+            }},
+            hot: {{
+                desc: '直近' + QP_HOT_WINDOW + '回で2回以上出ている番号を4個以上入れて、合計値だけ標準の帯に収めます。「流れが来ている番号」に乗る引き方です（統計的な裏づけはありません）。',
+                choice: {{ sum: 'normal', odd: 'any', low: 'any', run: 'any', digit: 'any', hot: '4' }}
+            }}
+        }};
+
+        function renderQuickPickTab() {{
+            if (!Object.keys(qpChoice).length) setQpPreset('random');
+            else renderQpCond();
+        }}
+
+        function setQpPreset(name, skipDraw) {{
+            qpPreset = name;
+            qpChoice = Object.assign({{}}, QP_PRESETS[name].choice);
+            ['random', 'strict', 'hot'].forEach(k => {{
+                document.getElementById('qp-preset-btn-' + k).classList.toggle('active-toggle', k === name);
+            }});
+            document.getElementById('qp-preset-desc').textContent = QP_PRESETS[name].desc;
+            renderQpCond();
+            if (!skipDraw) drawQuickPick();
+        }}
+
+        function setQpCond(key, value) {{
+            qpChoice[key] = value;
+            document.getElementById('qp-preset-desc').textContent = 'カスタム条件で引きます。' + QP_PRESETS[qpPreset].desc;
+            renderQpCond();
+        }}
+
+        function renderQpCond() {{
+            const html = qpCondDefs().map(c => {{
+                const opts = c.opts.map(o => {{
+                    const on = qpChoice[c.key] === o.v ? ' active-toggle' : '';
+                    const hint = o.hint ? '<span class="qp-hint">' + o.hint + '</span>' : '';
+                    return '<button class="btn' + on + '" onclick="setQpCond(\\'' + c.key + '\\',\\'' + o.v + '\\')">' + o.label + hint + '</button>';
+                }}).join('');
+                return '<div><div class="qp-cond-label">' + c.label + '</div><div class="qp-cond-opts">' + opts + '</div></div>';
+            }}).join('');
+            document.getElementById('qp-cond').innerHTML = html;
+        }}
+
+        function qpRandomSix() {{
+            const pool = [];
+            for (let i = 1; i <= 43; i++) pool.push(i);
+            for (let i = 0; i < 6; i++) {{
+                const j = i + Math.floor(Math.random() * (pool.length - i));
+                const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+            }}
+            return pool.slice(0, 6).sort((a, b) => a - b);
+        }}
+
+        function qpActiveTests() {{
+            const out = [];
+            qpCondDefs().forEach(c => {{
+                const opt = c.opts.find(o => o.v === qpChoice[c.key]);
+                if (opt && opt.test) out.push({{ key: c.key, label: c.label.split('（')[0], test: opt.test }});
+            }});
+            return out;
+        }}
+
+        // 条件を満たす目が出るまで引き直す（棄却サンプリング）。
+        // 厳しすぎて出ないときは、後ろの条件から順に外して必ず1口返す。
+        function drawQuickPick() {{
+            let tests = qpActiveTests();
+            const dropped = [];
+            let picked = null;
+            while (true) {{
+                for (let t = 0; t < 30000; t++) {{
+                    const m = qpRandomSix();
+                    const f = qpFeatures(m);
+                    if (tests.every(c => c.test(f))) {{ picked = m; break; }}
+                }}
+                if (picked || !tests.length) break;
+                dropped.push(tests[tests.length - 1].label);
+                tests = tests.slice(0, -1);
+            }}
+            if (!picked) picked = qpRandomSix();
+            qpLast = picked;
+            const warn = document.getElementById('qp-warn');
+            if (dropped.length) {{
+                warn.style.display = 'block';
+                warn.textContent = '条件が厳しすぎて同時には満たせなかったため、「' + dropped.join('」「') + '」の条件を外して引きました。';
+            }} else {{
+                warn.style.display = 'none';
+            }}
+            renderQpResult(picked);
+        }}
+
+        function qpBar(pct, maxPct) {{
+            return '<div class="qp-diag-bar-wrap"><div class="qp-diag-bar" style="width:' + (maxPct ? Math.min(100, pct / maxPct * 100) : 0) + '%"></div></div>';
+        }}
+
+        function qpRow(name, value, pct, maxPct, note, isTop) {{
+            return '<div class="qp-diag-row' + (isTop ? ' top' : '') + '">' +
+                '<div class="qp-diag-name">' + name + '</div>' +
+                '<div class="qp-diag-val">' + value + '</div>' +
+                qpBar(pct, maxPct) +
+                '<div class="qp-diag-pct">' + note + '</div></div>';
+        }}
+
+        function renderQpResult(m) {{
+            const f = qpFeatures(m);
+            const hot = qpHotNumbers();
+            document.getElementById('qp-balls').innerHTML = m.map(n =>
+                '<div class="qp-ball' + (hot.indexOf(n) >= 0 ? ' hot' : '') + '">' + n + '</div>').join('');
+
+            const bandKey = String(Math.floor(f.sum / QP_STATS.sumBand) * QP_STATS.sumBand);
+            const bandPct = QP_STATS.sumBands[bandKey] || 0;
+            const maxBand = Math.max.apply(null, Object.keys(QP_STATS.sumBands).map(k => QP_STATS.sumBands[k]));
+            const maxOf = arr => Math.max.apply(null, arr);
+            const isTop = (arr, i) => arr[i] === maxOf(arr);
+
+            const rows = [
+                qpRow('合計値', String(f.sum),
+                    bandPct, maxBand,
+                    bandPct.toFixed(1) + '%',
+                    bandPct === maxBand),
+                qpRow('奇数:偶数', f.odd + ' : ' + (6 - f.odd),
+                    QP_STATS.odd[f.odd], maxOf(QP_STATS.odd),
+                    QP_STATS.odd[f.odd].toFixed(1) + '%',
+                    isTop(QP_STATS.odd, f.odd)),
+                qpRow('低位:高位', f.low + ' : ' + (6 - f.low),
+                    QP_STATS.low[f.low], maxOf(QP_STATS.low),
+                    QP_STATS.low[f.low].toFixed(1) + '%',
+                    isTop(QP_STATS.low, f.low)),
+                qpRow('連続数字', f.pairs ? f.runNums.join(' ') : 'なし',
+                    QP_STATS.maxRun[f.maxRun], maxOf(QP_STATS.maxRun),
+                    QP_STATS.maxRun[f.maxRun].toFixed(1) + '%',
+                    isTop(QP_STATS.maxRun, f.maxRun)),
+                qpRow('下一桁', f.dup >= 2 ? f.dupGroups.join(' / ') : '被りなし',
+                    QP_STATS.lastDigit[f.dup], maxOf(QP_STATS.lastDigit),
+                    QP_STATS.lastDigit[f.dup].toFixed(1) + '%',
+                    isTop(QP_STATS.lastDigit, f.dup)),
+                qpRow('1〜31', f.birthday + ' 個',
+                    QP_STATS.birthday[f.birthday], maxOf(QP_STATS.birthday),
+                    f.birthday >= 6 ? '人気 高' : (f.birthday === 5 ? '人気 中' : '人気 低'),
+                    false),
+                qpRow('ホット', f.hotCount + ' 個', 0, 0, '直近' + QP_HOT_WINDOW + '回', false)
+            ];
+
+            // 「過去の出目らしさ」= 各項目の実測割合が、その項目の最頻値に対して何割かの平均。
+            // 最頻の形ばかりなら100点、珍しい形が混ざるほど下がる。
+            const ratios = [
+                bandPct / maxBand,
+                QP_STATS.odd[f.odd] / maxOf(QP_STATS.odd),
+                QP_STATS.low[f.low] / maxOf(QP_STATS.low),
+                QP_STATS.maxRun[f.maxRun] / maxOf(QP_STATS.maxRun),
+                QP_STATS.lastDigit[f.dup] / maxOf(QP_STATS.lastDigit)
+            ];
+            const score = Math.round(ratios.reduce((a, b) => a + b, 0) / ratios.length * 100);
+            const comment = score >= 80 ? 'ど真ん中。過去にいちばんよくある形です'
+                : score >= 55 ? 'ありふれた形の範囲内です'
+                : score >= 30 ? 'やや珍しい形です'
+                : 'かなり珍しい形。誰とも被らないかもしれません';
+
+            document.getElementById('qp-diagnosis').innerHTML =
+                '<div class="qp-diag-head">この目の診断（全' + QP_STATS.n + '回との比較）</div>' +
+                '<div class="qp-diag-note">％＝過去に同じ形だった回の割合（合計値は10刻みの帯で判定）。★はその項目でいちばん多い形。オレンジのボールは直近' + QP_HOT_WINDOW + '回のホット番号です。</div>' +
+                rows.join('') +
+                '<div class="qp-score"><span class="qp-score-num">' + score + '</span>' +
+                '<span class="qp-score-label">点／過去の出目らしさ・' + comment + '</span></div>';
+        }}
+
         function switchTab(name) {{
             activeTab = name;
             document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
@@ -502,6 +948,7 @@ def main():
             if (name === 'freq') renderFreqTab();
             if (name === 'pair') renderPairTab();
             if (name === 'tier') renderTierTab();
+            if (name === 'qp') renderQuickPickTab();
         }}
 
         function setFreqWindow(v) {{
