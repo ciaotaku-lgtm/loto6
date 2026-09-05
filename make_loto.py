@@ -1,6 +1,8 @@
 import urllib.request
 import csv
 import datetime
+import math
+from collections import Counter
 import json
 import io
 import os
@@ -43,12 +45,21 @@ def fetch_latest():
         try:
             # 本数字6つ (昇順ソート)
             main_nums = sorted(int(row[i]) for i in range(2, 8))
-            history.append({
+            rec = {
                 "id": int(row[0]),
                 "date": row[1],
                 "main": main_nums,
                 "bonus": int(row[8])
-            })
+            }
+            # 配当データ(1等口数・1等金額・キャリーオーバー)はトリビアで使う。
+            # 古い回や形式変更で欠けていても本体は生かしたいので、ここだけ別に握りつぶす。
+            try:
+                rec["win1"] = int(row[9])
+                rec["amt1"] = int(row[14])
+                rec["carry"] = int(row[19])
+            except (ValueError, IndexError):
+                pass
+            history.append(rec)
         except ValueError:
             skipped += 1
             continue
@@ -105,16 +116,23 @@ def check_freshness(history):
 
 def compute_tier_distribution(history):
     """盤面・座標タブと同じアルゴリズム(列=昇順順位・段=move-to-front方式)で、
-    (列,段)ごとの再登場回数を全期間で集計し、段ごとの再登場回数と総数を返す。"""
+    (列,段)ごとの再登場回数を全期間で集計する。
+    戻り値は (段ごとの再登場回数, 総数, 段ごとの平均在籍数)。
+    在籍数は「その段に何個の数字がいるか」で、公平な抽選なら再登場の割合は
+    在籍数÷43になるはず、という理論値を出すのに使う。"""
     tier_rows = 11
     cols = [[] for _ in range(6)]
     for i in range(1, 44):
         cols[(i - 1) % 6].append(i)
     seen = set()
     tier_counts = [0] * (tier_rows + 1)
+    occupancy = [0] * (tier_rows + 1)
     total = 0
     for d in history:
         m = d["main"]
+        # その回を引く直前の状態で、各段に何個いるかを数える
+        for t in range(tier_rows + 1):
+            occupancy[t] += sum(1 for c in cols if len(c) > t)
         for n in m:
             if n in seen:
                 for ci in range(6):
@@ -131,7 +149,8 @@ def compute_tier_distribution(history):
                     break
         for pos, n in enumerate(m):
             cols[pos].insert(0, n)
-    return tier_counts, total
+    n_draws = max(1, len(history))
+    return tier_counts, total, [o / n_draws for o in occupancy]
 
 
 def compute_droughts(history):
@@ -256,9 +275,95 @@ def compute_quickpick_stats(history):
     }
 
 
+def format_yen(n):
+    """金額を「約6.0億円（600,000,000円）」のように読みやすく整形する。"""
+    if n >= 100000000:
+        return f"約{n / 100000000:.1f}億円（{n:,}円）"
+    if n >= 10000:
+        return f"約{n / 10000:,.0f}万円（{n:,}円）"
+    return f"{n:,}円"
+
+
+def max_run_length(main):
+    """並びの中でいちばん長い連番の長さ。"""
+    best = run = 1
+    for a, b in zip(main, main[1:]):
+        run = run + 1 if b == a + 1 else 1
+        best = max(best, run)
+    return best
+
+
+def compute_record_draws(history):
+    """合計値や並びの「記録」になっている回を拾う。数値も回も毎回ここで出し直すので、
+    データが増えれば記録も自動で更新される。"""
+    by_sum = sorted(history, key=lambda d: sum(d["main"]))
+    all_odd = [d for d in history if all(x % 2 for x in d["main"])]
+    all_even = [d for d in history if all(x % 2 == 0 for x in d["main"])]
+    runs4 = [d for d in history if max_run_length(d["main"]) >= 4]
+    dig4 = [d for d in history if max(Counter(x % 10 for x in d["main"]).values()) >= 4]
+    return {
+        "max_sum": by_sum[-1],
+        "min_sum": by_sum[0],
+        "all_odd": all_odd,
+        "all_even": all_even,
+        "runs4": runs4,
+        "dig4": dig4,
+    }
+
+
+def compute_myth_trivia(history):
+    """「前回と同じ数字は避けるべき」「同じ組み合わせは出ない」といった俗説を、
+    理論値（超幾何分布）と突き合わせて検証する。"""
+    n = len(history)
+    counts = Counter(len(set(history[i]["main"]) & set(history[i + 1]["main"])) for i in range(n - 1))
+    pairs = max(1, n - 1)
+    total_comb = math.comb(43, 6)
+    rows = []
+    for k in range(7):
+        actual = counts.get(k, 0) / pairs * 100
+        theory = math.comb(6, k) * math.comb(37, 6 - k) / total_comb * 100
+        rows.append({"k": k, "actual": actual, "theory": theory})
+    max_gap = max(abs(r["actual"] - r["theory"]) for r in rows)
+    combo_counts = Counter(tuple(d["main"]) for d in history)
+    repeats = [c for c in combo_counts.values() if c > 1]
+    return {"rows": rows, "max_gap": max_gap, "repeat_count": len(repeats)}
+
+
+def compute_prize_trivia(history):
+    """1等の当選金額とキャリーオーバーの記録。配当データが欠けている回は除いて計算する。"""
+    priced = [d for d in history if "amt1" in d and "win1" in d]
+    if not priced:
+        return None
+    n = len(priced)
+    none1 = [d for d in priced if d["win1"] == 0]
+    paid = [d for d in priced if d["win1"] > 0]
+    longest = current = 0
+    longest_end = None
+    for d in priced:
+        if d["win1"] == 0:
+            current += 1
+            if current > longest:
+                longest, longest_end = current, d
+        else:
+            current = 0
+    carried = [d for d in priced if d.get("carry", 0) > 0]
+    return {
+        "n": n,
+        "top": max(paid, key=lambda d: d["amt1"]) if paid else None,
+        "low": min(paid, key=lambda d: d["amt1"]) if paid else None,
+        "none_count": len(none1),
+        "none_rate": len(none1) / n * 100,
+        "none_longest": longest,
+        "none_longest_end": longest_end,
+        "carry_top": max(carried, key=lambda d: d["carry"]) if carried else None,
+        "carry_rate": len(carried) / n * 100,
+        "latest": priced[-1],
+    }
+
+
 def build_trivia_html(history):
     """座標分布の形・連続未出記録・ボーナス俗説の検証を、トリビアタブ用のHTMLカードにする。"""
-    tier_counts, tier_total = compute_tier_distribution(history)
+    tier_counts, tier_total, tier_occ = compute_tier_distribution(history)
     tier_pct = [c / tier_total * 100 for c in tier_counts] if tier_total else [0] * len(tier_counts)
     top4_min, top4_max = min(tier_pct[:4]), max(tier_pct[:4])
     tail_pct = sum(tier_pct[9:])
@@ -270,10 +375,36 @@ def build_trivia_html(history):
 
     bonus = compute_bonus_trivia(history)
 
+    def myth_verdict(rate, baseline):
+        """実測が基準値からどれだけ離れているかで結論の書き方を変える。
+        固定文にしてしまうと、データが増えて数値が動いたとき文章だけ取り残されるため。
+        (基準値どおりか, 説明文) を返す。"""
+        diff = rate - baseline
+        if abs(diff) < baseline * 0.15:
+            return True, "基準値とほぼ同じ"
+        return False, "基準値より" + ("高め" if diff > 0 else "低め") + f"（差{diff:+.2f}ポイント）"
+
+    flat_a, verdict_a = myth_verdict(bonus["bonus_to_next_main_rate"], bonus["baseline_rate"])
+    flat_b, verdict_b = myth_verdict(bonus["main_to_next_bonus_rate"], bonus["baseline_rate"])
+    if flat_a and flat_b:
+        bonus_conclusion = "どちらも基準値とほぼ同じで、俗説は成立していません"
+    else:
+        bonus_conclusion = f"前者は{verdict_a}、後者は{verdict_b}という結果です"
+
+    records = compute_record_draws(history)
+    myth = compute_myth_trivia(history)
+    prize = compute_prize_trivia(history)
+
+    def draw_label(d):
+        return f"第{d['id']}回（{d['date']}）"
+
+    def nums(d):
+        return " ".join(str(x) for x in d["main"])
+
     cards = [
         f'''<div class="trivia-card">
             <h3 class="trivia-title">座標(段)の分布は「なだらか→崖」の形</h3>
-            <p class="trivia-body">全<span class="num">{len(history)}</span>回・のべ<span class="num">{tier_total:,}</span>回の再登場を集計すると、1〜4段目は<span class="num">{top4_min:.1f}〜{top4_max:.1f}%</span>でほぼ横並び、5段目あたりから急に減っていきます（10段目以降は合計<span class="num">{tail_pct:.1f}%</span>）。これは「直近に出た数字が列の先頭に来る」しくみ（move-to-front方式の自己組織化リストと同じ構造）による形で、抽選そのものの偏りではありません。</p>
+            <p class="trivia-body">全<span class="num">{len(history)}</span>回・のべ<span class="num">{tier_total:,}</span>回の再登場を集計すると、A〜D段は<span class="num">{top4_min:.1f}〜{top4_max:.1f}%</span>でほぼ横並び、E段あたりから急に減っていきます（J段以降は合計<span class="num">{tail_pct:.1f}%</span>）。これは「直近に出た数字が列の先頭に来る」しくみ（move-to-front方式の自己組織化リストと同じ構造）による形で、抽選そのものの偏りではありません。</p>
         </div>''',
         f'''<div class="trivia-card">
             <h3 class="trivia-title">連続未出（干上がり）記録</h3>
@@ -281,10 +412,63 @@ def build_trivia_html(history):
         </div>''',
         f'''<div class="trivia-card">
             <h3 class="trivia-title">ボーナス数字の都市伝説を検証</h3>
-            <p class="trivia-body">「前回のボーナス数字は次回、本数字として出やすい」という説を検証すると<span class="num">{bonus['bonus_to_next_main_rate']:.2f}%</span>（基準値{bonus['baseline_rate']:.2f}%）、逆に「前回の本数字は次回ボーナスになりやすい」も<span class="num">{bonus['main_to_next_bonus_rate']:.2f}%</span>で、どちらも俗説は成立しませんでした。ちなみにボーナス数字が本数字の最小〜最大の範囲内に収まる確率は<span class="num">{bonus['within_range_rate']:.1f}%</span>ですが、これは6個の数字が散らばれば7個目がその間に入りやすいという組み合わせ論の話で、特別な偏りではありません。</p>
+            <p class="trivia-body">「前回のボーナス数字は次回、本数字として出やすい」という説を検証すると<span class="num">{bonus['bonus_to_next_main_rate']:.2f}%</span>（基準値{bonus['baseline_rate']:.2f}%）、逆に「前回の本数字は次回ボーナスになりやすい」も<span class="num">{bonus['main_to_next_bonus_rate']:.2f}%</span>で、{bonus_conclusion}。ちなみにボーナス数字が本数字の最小〜最大の範囲内に収まる確率は<span class="num">{bonus['within_range_rate']:.1f}%</span>ですが、これは6個の数字が散らばれば7個目がその間に入りやすいという組み合わせ論の話で、特別な偏りではありません。</p>
         </div>''',
     ]
-    return "\n".join(cards)
+
+    # 段ごとの「実測 vs 理論」。A段には直前の回に出た6個がそのまま並ぶので、
+    # 段の比較がそのまま「この前出た数字は避けるべきか」の検証になる。
+    tier_rows_html = "".join(
+        f'<div class="trivia-row"><span class="trivia-row-name">{chr(65 + t)}段</span>'
+        f'<span class="trivia-row-val">{tier_pct[t]:.2f}%</span>'
+        f'<span class="trivia-row-sub">理論 {tier_occ[t] / 43 * 100:.2f}%（{tier_occ[t]:.2f}個が在籍）</span></div>'
+        for t in range(4)
+    )
+    tier_gap = max(abs(tier_pct[t] - tier_occ[t] / 43 * 100) for t in range(4))
+    tier_verdict = (
+        "どの段もほぼ理論値どおりで、ズレは最大" + f"{tier_gap:.2f}ポイント"
+        if tier_gap < 1.0 else
+        f"理論値とのズレが最大{tier_gap:.2f}ポイントあります"
+    )
+    match0 = myth["rows"][0]["actual"]
+    match1 = myth["rows"][1]["actual"]
+    combo_text = (
+        "一度もありません" if myth["repeat_count"] == 0
+        else f"{myth['repeat_count']}件あります"
+    )
+    cards.append(f'''<div class="trivia-card">
+            <h3 class="trivia-title">「この前出た数字は避けろ」は本当か</h3>
+            <p class="trivia-body">盤面の<span class="num">A段</span>には、直前の回に出た6個がそのまま並びます（引かれた数字が列の先頭に入るため）。B段はその1つ前、C段はさらに前……と、段は「どれくらい前に出た数字か」を表しています。<br>どの段にも数字は6個ずついるので、抽選が公平なら、どの段からも<span class="num">6÷43＝13.95%</span>の割合で再登場するはずです。</p>
+            {tier_rows_html}
+            <p class="trivia-body">{tier_verdict}。<b>直前に出たばかりのA段の数字も、4回前のD段の数字も、次に出る確率は変わりません。</b>「この前出た数字は避ける」に根拠はないということです。実際、前回の6個のうち次の回にも出た数は0個が<span class="num">{match0:.1f}%</span>、1個が<span class="num">{match1:.1f}%</span>で、これも理論値どおりでした。<br>E段から下がっていくのは、段が深いほどそこにいる数字の数自体が減るからで（上のカードの「崖」の正体）、抽選の偏りではありません。</p>
+            <p class="trivia-body">ちなみに、6個の組み合わせがそっくり同じだった回は<span class="num">{combo_text}</span>（組み合わせは全部で<span class="num">{math.comb(43, 6):,}</span>通りあるので、当分は起こりません）。</p>
+        </div>''')
+
+    cards.insert(1, cards.pop())
+
+    last_odd = records["all_odd"][-1] if records["all_odd"] else None
+    last_even = records["all_even"][-1] if records["all_even"] else None
+    last_run4 = records["runs4"][-1] if records["runs4"] else None
+    last_dig4 = records["dig4"][-1] if records["dig4"] else None
+    cards.append(f'''<div class="trivia-card">
+            <h3 class="trivia-title">記録的な出目</h3>
+            <p class="trivia-body">合計値がいちばん大きかったのは{draw_label(records["max_sum"])}の<span class="num">{sum(records["max_sum"]["main"])}</span>（{nums(records["max_sum"])}）、いちばん小さかったのは{draw_label(records["min_sum"])}の<span class="num">{sum(records["min_sum"]["main"])}</span>（{nums(records["min_sum"])}）でした。</p>
+            <p class="trivia-body">6個すべてが奇数だった回は<span class="num">{len(records["all_odd"])}</span>回{"（直近は" + draw_label(last_odd) + "の" + nums(last_odd) + "）" if last_odd else ""}、すべて偶数は<span class="num">{len(records["all_even"])}</span>回{"（直近は" + draw_label(last_even) + "の" + nums(last_even) + "）" if last_even else ""}。4つ以上の連番が出たのは<span class="num">{len(records["runs4"])}</span>回{"（直近は" + draw_label(last_run4) + "の" + nums(last_run4) + "）" if last_run4 else ""}、下一桁が4つそろったのは<span class="num">{len(records["dig4"])}</span>回{"（直近は" + draw_label(last_dig4) + "の" + nums(last_dig4) + "）" if last_dig4 else ""}あります。</p>
+        </div>''')
+
+    if prize:
+        carry_top = prize["carry_top"]
+        none_end = prize["none_longest_end"]
+        cards.append(f'''<div class="trivia-card">
+            <h3 class="trivia-title">当選金額とキャリーオーバーの記録</h3>
+            <p class="trivia-body">1等の最高額は{draw_label(prize["top"])}の<span class="num">{format_yen(prize["top"]["amt1"])}</span>（{prize["top"]["win1"]}口）。逆にいちばん少なかった1等は{draw_label(prize["low"])}の<span class="num">{format_yen(prize["low"]["amt1"])}</span>で、このときは<span class="num">{prize["low"]["win1"]}口</span>が当たって山分けになりました。同じ1等でも、何人と分けるかでこれだけ変わります。</p>
+            <p class="trivia-body">1等が誰も当たらなかった回は<span class="num">{prize["none_count"]}</span>回（<span class="num">{prize["none_rate"]:.1f}%</span>）あり、最長で<span class="num">{prize["none_longest"]}</span>回連続{"（" + draw_label(none_end) + "まで）" if none_end else ""}。持ち越されたキャリーオーバーの最高額は{draw_label(carry_top) if carry_top else "—"}の<span class="num">{format_yen(carry_top["carry"]) if carry_top else "—"}</span>でした。直近の{draw_label(prize["latest"])}時点では{"キャリーオーバーは<span class=" + chr(34) + "num" + chr(34) + ">" + format_yen(prize["latest"]["carry"]) + "</span>が持ち越されています" if prize["latest"].get("carry", 0) else "キャリーオーバーはありません"}。</p>
+        </div>''')
+
+    # 「いつ時点の集計か」を必ず先頭に出す。数値は毎回計算し直しているが、
+    # 見る側にとって何回目までのデータなのかが分からないと古い情報と区別できないため。
+    header = (f'''<p class="trivia-range">第{history[0]["id"]}回（{history[0]["date"]}）〜第{history[-1]["id"]}回（{history[-1]["date"]}）の全{len(history)}回を集計。データ更新のたびに計算し直しています。</p>''')
+    return header + "\n" + "\n".join(cards)
 
 
 def main():
@@ -307,7 +491,9 @@ def main():
     is_fresh, freshness_msg = check_freshness(history)
     print(("\u2713 " if is_fresh else "\u26a0 ") + freshness_msg)
 
-    data_json = json.dumps(history)
+    # 配当データはPython側のトリビア計算だけで使い、HTMLには埋め込まない（ページを重くしないため）
+    data_json = json.dumps([{"id": d["id"], "date": d["date"], "main": d["main"], "bonus": d["bonus"]}
+                            for d in history])
     qp_stats_json = json.dumps(compute_quickpick_stats(history))
     trivia_html = build_trivia_html(history)
 
@@ -352,7 +538,7 @@ def main():
 
         /* --- 出現頻度ランキング --- */
         .freq-toggle {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 8px; }}
-        .freq-toggle .btn.active-toggle {{ background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border-color: #d4af37; }}
+        .freq-toggle .btn.active-toggle, .qp-preset-bar .btn.active-toggle, .qp-cond-opts .btn.active-toggle {{ background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border-color: #d4af37; }}
         .freq-caption {{ font-size: 11px; color: #8a7a5c; margin: 0 0 10px 0; text-align: center; padding: 0 15px; }}
         .freq-subheading {{ width: 100%; max-width: 400px; box-sizing: border-box; padding: 0 15px; font-size: 12px; font-weight: bold; margin: 14px 0 6px 0; }}
         .freq-subheading.hot {{ color: #ffd700; }}
@@ -394,14 +580,25 @@ def main():
         .qp-custom[open] > summary {{ color: #ffd700; border-style: solid; }}
         .qp-cond {{ display: flex; flex-direction: column; gap: 10px; padding: 12px 2px 4px 2px; }}
         .qp-cond-label {{ font-size: 11px; color: #ffd700; font-weight: bold; margin-bottom: 4px; }}
-        .qp-cond-opts {{ display: flex; gap: 4px; }}
-        .qp-cond-opts .btn {{ flex: 1; min-width: 0; padding: 6px 2px; font-size: 10px; }}
-        .qp-cond-opts .btn .qp-hint {{ display: block; font-size: 8px; font-weight: normal; opacity: 0.75; margin-top: 1px; }}
+        .qp-cond-opts {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+        .qp-cond-opts .btn {{ flex: 1 1 45%; min-width: 0; padding: 11px 4px; font-size: 12.5px; color: #ffe06a; }}
+        .qp-cond-opts .btn .qp-hint {{ display: block; font-size: 10px; font-weight: normal; color: #b9a577; margin-top: 2px; }}
+        .qp-cond-opts .btn.active-toggle .qp-hint {{ color: #4a3300; }}
+        .qp-cond-label {{ font-size: 12px; }}
+        .qp-num-picker {{ display: flex; gap: 6px; overflow-x: auto; padding: 10px 2px 8px 2px; width: 100%; -webkit-overflow-scrolling: touch; }}
+        .qp-num-item.keep {{ background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border-color: #fff; box-shadow: 0 0 10px rgba(212,175,55,0.6); transform: scale(1.1); }}
+        .qp-num-item.ban {{ background: #2a1414; color: #8a5555; border-color: #7a3030; text-decoration: line-through; }}
+        .qp-num-summary {{ font-size: 11px; color: #ccc; line-height: 1.9; }}
+        .qp-num-summary .keep-label {{ color: #ffd700; font-weight: bold; }}
+        .qp-num-summary .ban-label {{ color: #d98080; font-weight: bold; }}
+        .qp-num-msg {{ font-size: 11px; color: #e8a33d; min-height: 15px; line-height: 1.4; }}
+        .qp-num-clear {{ margin-top: 6px; }}
         .qp-draw-btn {{ width: 100%; max-width: 370px; margin: 4px 0 14px 0; padding: 13px 0; font-size: 14px; font-weight: bold; color: #1a120b; background: linear-gradient(180deg, #ffd700, #b8860b); border: none; border-radius: 14px; cursor: pointer; box-shadow: 0 0 14px rgba(212,175,55,0.35); }}
         .qp-draw-btn:active {{ transform: scale(0.98); }}
         .qp-balls {{ display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; min-height: 44px; margin-bottom: 12px; }}
         .qp-ball {{ width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 16px; color: #1a120b; background: radial-gradient(circle at 32% 28%, #fff2b0, #e5c100 55%, #a8790a); border: 1.5px solid #ffe97a; box-shadow: 0 3px 8px rgba(0,0,0,0.6); animation: qp-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both; }}
         @keyframes qp-pop {{ from {{ transform: scale(0.3); opacity: 0; }} to {{ transform: scale(1); opacity: 1; }} }}
+        .qp-ball.keep {{ box-shadow: 0 0 0 2px #fff, 0 3px 8px rgba(0,0,0,0.6); }}
         .qp-ball.hot {{ background: radial-gradient(circle at 32% 28%, #ffd0a0, #ff7a2f 55%, #a33c00); border-color: #ffb27a; color: #2a1000; }}
         .qp-diagnosis {{ width: 100%; max-width: 400px; box-sizing: border-box; padding: 0 15px; display: flex; flex-direction: column; gap: 7px; }}
         .qp-diag-head {{ font-size: 12px; font-weight: bold; color: #ffd700; border-bottom: 1px solid rgba(212,175,55,0.3); padding-bottom: 5px; margin-bottom: 2px; }}
@@ -419,6 +616,11 @@ def main():
         .qp-score-label {{ font-size: 11px; color: #8a7a5c; }}
         .qp-warn {{ font-size: 11px; color: #e8a33d; text-align: center; padding: 0 15px; margin: 0 0 8px 0; }}
         .qp-note {{ margin-bottom: 190px !important; line-height: 1.7; }}
+        .trivia-range {{ width: 100%; max-width: 400px; box-sizing: border-box; padding: 0 2px; font-size: 11px; color: #8a7a5c; line-height: 1.7; margin: 0 0 2px 0; }}
+        .trivia-row {{ display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 3px 0 3px 4px; }}
+        .trivia-row-name {{ width: 66px; min-width: 66px; color: #8a7a5c; }}
+        .trivia-row-val {{ width: 56px; min-width: 56px; color: #ffd700; font-weight: bold; font-variant-numeric: tabular-nums; }}
+        .trivia-row-sub {{ color: #999; font-size: 11px; font-variant-numeric: tabular-nums; }}
         .trivia-card {{ background: rgba(255,255,255,0.05); border: 1px solid rgba(212,175,55,0.25); border-radius: 12px; padding: 14px 16px; }}
         .trivia-title {{ margin: 0 0 6px 0; font-size: 13px; color: #ffd700; font-weight: bold; }}
         .trivia-body {{ margin: 0; font-size: 12px; color: #ddd; line-height: 1.8; }}
@@ -512,6 +714,13 @@ def main():
             <details class="qp-custom">
                 <summary>カスタム条件を開く（プリセットから自由に変えられます）</summary>
                 <div class="qp-cond" id="qp-cond"></div>
+            </details>
+            <details class="qp-custom">
+                <summary>使う数字を選ぶ（必ず入れる／除外する）</summary>
+                <div class="qp-num-picker" id="qp-num-picker"></div>
+                <div class="qp-num-summary" id="qp-num-summary"></div>
+                <div class="qp-num-msg" id="qp-num-msg"></div>
+                <button class="btn qp-num-clear" onclick="clearQpNums()">選択をクリア</button>
             </details>
             <button class="qp-draw-btn" onclick="drawQuickPick()">この条件で引く</button>
             <p class="qp-warn" id="qp-warn" style="display:none"></p>
@@ -784,6 +993,7 @@ def main():
         }};
 
         function renderQuickPickTab() {{
+            renderQpNumPicker();
             if (!Object.keys(qpChoice).length) setQpPreset('random');
             else renderQpCond();
         }}
@@ -817,14 +1027,72 @@ def main():
             document.getElementById('qp-cond').innerHTML = html;
         }}
 
+        // 使う数字の手動指定。qpNumState[番号] = 'keep'(必ず入れる) / 'ban'(除外)。
+        // タップするたび なし → keep → ban → なし と切り替わる。
+        let qpNumState = {{}};
+
+        function qpKeepNums() {{
+            return Object.keys(qpNumState).filter(n => qpNumState[n] === 'keep').map(Number).sort((a, b) => a - b);
+        }}
+
+        function qpBanNums() {{
+            return Object.keys(qpNumState).filter(n => qpNumState[n] === 'ban').map(Number).sort((a, b) => a - b);
+        }}
+
+        function toggleQpNum(n) {{
+            const msg = document.getElementById('qp-num-msg');
+            msg.textContent = '';
+            const cur = qpNumState[n];
+            if (!cur) {{
+                if (qpKeepNums().length >= 6) msg.textContent = '「必ず入れる」は6個までです。外したい番号をもう一度タップしてください。';
+                else qpNumState[n] = 'keep';
+            }} else if (cur === 'keep') {{
+                // 除外に回すと残りが6個未満になる場合は指定なしに戻す
+                if (43 - qpBanNums().length - 1 < 6) {{
+                    msg.textContent = '除外しすぎです（残る番号が6個を下回ります）。指定なしに戻しました。';
+                    delete qpNumState[n];
+                }} else {{
+                    qpNumState[n] = 'ban';
+                }}
+            }} else {{
+                delete qpNumState[n];
+            }}
+            renderQpNumPicker();
+        }}
+
+        function clearQpNums() {{
+            qpNumState = {{}};
+            document.getElementById('qp-num-msg').textContent = '';
+            renderQpNumPicker();
+        }}
+
+        function renderQpNumPicker() {{
+            const picker = document.getElementById('qp-num-picker');
+            picker.innerHTML = '';
+            for (let i = 1; i <= 43; i++) {{
+                const item = document.createElement('div');
+                item.className = 'num-picker-item qp-num-item' + (qpNumState[i] ? ' ' + qpNumState[i] : '');
+                item.textContent = i;
+                item.onclick = () => toggleQpNum(i);
+                picker.appendChild(item);
+            }}
+            const keeps = qpKeepNums(), bans = qpBanNums();
+            document.getElementById('qp-num-summary').innerHTML =
+                '<span class="keep-label">◎ 必ず入れる</span>： ' + (keeps.length ? keeps.join('  ') : '指定なし') + '<br>' +
+                '<span class="ban-label">✕ 除外する</span>： ' + (bans.length ? bans.join('  ') : '指定なし') +
+                (keeps.length >= 6 ? '<br>6個すべて指定されているので、この目で固定されます（他の条件は使いません）。' : '');
+        }}
+
         function qpRandomSix() {{
+            const keep = qpKeepNums();
             const pool = [];
-            for (let i = 1; i <= 43; i++) pool.push(i);
-            for (let i = 0; i < 6; i++) {{
+            for (let i = 1; i <= 43; i++) if (!qpNumState[i]) pool.push(i);
+            const need = Math.max(0, 6 - keep.length);
+            for (let i = 0; i < need; i++) {{
                 const j = i + Math.floor(Math.random() * (pool.length - i));
                 const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
             }}
-            return pool.slice(0, 6).sort((a, b) => a - b);
+            return keep.concat(pool.slice(0, need)).sort((a, b) => a - b);
         }}
 
         function qpActiveTests() {{
@@ -839,7 +1107,7 @@ def main():
         // 条件を満たす目が出るまで引き直す（棄却サンプリング）。
         // 厳しすぎて出ないときは、後ろの条件から順に外して必ず1口返す。
         function drawQuickPick() {{
-            let tests = qpActiveTests();
+            let tests = qpKeepNums().length >= 6 ? [] : qpActiveTests();
             const dropped = [];
             let picked = null;
             while (true) {{
@@ -880,7 +1148,8 @@ def main():
             const f = qpFeatures(m);
             const hot = qpHotNumbers();
             document.getElementById('qp-balls').innerHTML = m.map(n =>
-                '<div class="qp-ball' + (hot.indexOf(n) >= 0 ? ' hot' : '') + '">' + n + '</div>').join('');
+                '<div class="qp-ball' + (hot.indexOf(n) >= 0 ? ' hot' : '') +
+                (qpNumState[n] === 'keep' ? ' keep' : '') + '">' + n + '</div>').join('');
 
             const bandKey = String(Math.floor(f.sum / QP_STATS.sumBand) * QP_STATS.sumBand);
             const bandPct = QP_STATS.sumBands[bandKey] || 0;
@@ -933,7 +1202,7 @@ def main():
 
             document.getElementById('qp-diagnosis').innerHTML =
                 '<div class="qp-diag-head">この目の診断（全' + QP_STATS.n + '回との比較）</div>' +
-                '<div class="qp-diag-note">％＝過去に同じ形だった回の割合（合計値は10刻みの帯で判定）。★はその項目でいちばん多い形。オレンジのボールは直近' + QP_HOT_WINDOW + '回のホット番号です。</div>' +
+                '<div class="qp-diag-note">％＝過去に同じ形だった回の割合（合計値は10刻みの帯で判定）。★はその項目でいちばん多い形。オレンジのボールは直近' + QP_HOT_WINDOW + '回のホット番号、白い二重枠は自分で指定した番号です。</div>' +
                 rows.join('') +
                 '<div class="qp-score"><span class="qp-score-num">' + score + '</span>' +
                 '<span class="qp-score-label">点／過去の出目らしさ・' + comment + '</span></div>';

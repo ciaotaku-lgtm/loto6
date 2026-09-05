@@ -38,7 +38,7 @@
 
         /* --- 出現頻度ランキング --- */
         .freq-toggle { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 8px; }
-        .freq-toggle .btn.active-toggle { background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border-color: #d4af37; }
+        .freq-toggle .btn.active-toggle, .qp-preset-bar .btn.active-toggle, .qp-cond-opts .btn.active-toggle { background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border-color: #d4af37; }
         .freq-caption { font-size: 11px; color: #8a7a5c; margin: 0 0 10px 0; text-align: center; padding: 0 15px; }
         .freq-subheading { width: 100%; max-width: 400px; box-sizing: border-box; padding: 0 15px; font-size: 12px; font-weight: bold; margin: 14px 0 6px 0; }
         .freq-subheading.hot { color: #ffd700; }
@@ -80,14 +80,25 @@
         .qp-custom[open] > summary { color: #ffd700; border-style: solid; }
         .qp-cond { display: flex; flex-direction: column; gap: 10px; padding: 12px 2px 4px 2px; }
         .qp-cond-label { font-size: 11px; color: #ffd700; font-weight: bold; margin-bottom: 4px; }
-        .qp-cond-opts { display: flex; gap: 4px; }
-        .qp-cond-opts .btn { flex: 1; min-width: 0; padding: 6px 2px; font-size: 10px; }
-        .qp-cond-opts .btn .qp-hint { display: block; font-size: 8px; font-weight: normal; opacity: 0.75; margin-top: 1px; }
+        .qp-cond-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+        .qp-cond-opts .btn { flex: 1 1 45%; min-width: 0; padding: 11px 4px; font-size: 12.5px; color: #ffe06a; }
+        .qp-cond-opts .btn .qp-hint { display: block; font-size: 10px; font-weight: normal; color: #b9a577; margin-top: 2px; }
+        .qp-cond-opts .btn.active-toggle .qp-hint { color: #4a3300; }
+        .qp-cond-label { font-size: 12px; }
+        .qp-num-picker { display: flex; gap: 6px; overflow-x: auto; padding: 10px 2px 8px 2px; width: 100%; -webkit-overflow-scrolling: touch; }
+        .qp-num-item.keep { background: linear-gradient(180deg, #d4af37, #b8860b); color: #1a120b; border-color: #fff; box-shadow: 0 0 10px rgba(212,175,55,0.6); transform: scale(1.1); }
+        .qp-num-item.ban { background: #2a1414; color: #8a5555; border-color: #7a3030; text-decoration: line-through; }
+        .qp-num-summary { font-size: 11px; color: #ccc; line-height: 1.9; }
+        .qp-num-summary .keep-label { color: #ffd700; font-weight: bold; }
+        .qp-num-summary .ban-label { color: #d98080; font-weight: bold; }
+        .qp-num-msg { font-size: 11px; color: #e8a33d; min-height: 15px; line-height: 1.4; }
+        .qp-num-clear { margin-top: 6px; }
         .qp-draw-btn { width: 100%; max-width: 370px; margin: 4px 0 14px 0; padding: 13px 0; font-size: 14px; font-weight: bold; color: #1a120b; background: linear-gradient(180deg, #ffd700, #b8860b); border: none; border-radius: 14px; cursor: pointer; box-shadow: 0 0 14px rgba(212,175,55,0.35); }
         .qp-draw-btn:active { transform: scale(0.98); }
         .qp-balls { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; min-height: 44px; margin-bottom: 12px; }
         .qp-ball { width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 16px; color: #1a120b; background: radial-gradient(circle at 32% 28%, #fff2b0, #e5c100 55%, #a8790a); border: 1.5px solid #ffe97a; box-shadow: 0 3px 8px rgba(0,0,0,0.6); animation: qp-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
         @keyframes qp-pop { from { transform: scale(0.3); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        .qp-ball.keep { box-shadow: 0 0 0 2px #fff, 0 3px 8px rgba(0,0,0,0.6); }
         .qp-ball.hot { background: radial-gradient(circle at 32% 28%, #ffd0a0, #ff7a2f 55%, #a33c00); border-color: #ffb27a; color: #2a1000; }
         .qp-diagnosis { width: 100%; max-width: 400px; box-sizing: border-box; padding: 0 15px; display: flex; flex-direction: column; gap: 7px; }
         .qp-diag-head { font-size: 12px; font-weight: bold; color: #ffd700; border-bottom: 1px solid rgba(212,175,55,0.3); padding-bottom: 5px; margin-bottom: 2px; }
@@ -105,6 +116,11 @@
         .qp-score-label { font-size: 11px; color: #8a7a5c; }
         .qp-warn { font-size: 11px; color: #e8a33d; text-align: center; padding: 0 15px; margin: 0 0 8px 0; }
         .qp-note { margin-bottom: 190px !important; line-height: 1.7; }
+        .trivia-range { width: 100%; max-width: 400px; box-sizing: border-box; padding: 0 2px; font-size: 11px; color: #8a7a5c; line-height: 1.7; margin: 0 0 2px 0; }
+        .trivia-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 3px 0 3px 4px; }
+        .trivia-row-name { width: 66px; min-width: 66px; color: #8a7a5c; }
+        .trivia-row-val { width: 56px; min-width: 56px; color: #ffd700; font-weight: bold; font-variant-numeric: tabular-nums; }
+        .trivia-row-sub { color: #999; font-size: 11px; font-variant-numeric: tabular-nums; }
         .trivia-card { background: rgba(255,255,255,0.05); border: 1px solid rgba(212,175,55,0.25); border-radius: 12px; padding: 14px 16px; }
         .trivia-title { margin: 0 0 6px 0; font-size: 13px; color: #ffd700; font-weight: bold; }
         .trivia-body { margin: 0; font-size: 12px; color: #ddd; line-height: 1.8; }
@@ -199,6 +215,13 @@
                 <summary>カスタム条件を開く（プリセットから自由に変えられます）</summary>
                 <div class="qp-cond" id="qp-cond"></div>
             </details>
+            <details class="qp-custom">
+                <summary>使う数字を選ぶ（必ず入れる／除外する）</summary>
+                <div class="qp-num-picker" id="qp-num-picker"></div>
+                <div class="qp-num-summary" id="qp-num-summary"></div>
+                <div class="qp-num-msg" id="qp-num-msg"></div>
+                <button class="btn qp-num-clear" onclick="clearQpNums()">選択をクリア</button>
+            </details>
             <button class="qp-draw-btn" onclick="drawQuickPick()">この条件で引く</button>
             <p class="qp-warn" id="qp-warn" style="display:none"></p>
             <div class="qp-balls" id="qp-balls"></div>
@@ -207,9 +230,17 @@
         </div>
         <div id="panel-trivia" class="tab-panel">
             <div class="trivia-list">
-                <div class="trivia-card">
+                <p class="trivia-range">第1回（2000/10/05）〜第2134回（2026/09/03）の全2134回を集計。データ更新のたびに計算し直しています。</p>
+<div class="trivia-card">
             <h3 class="trivia-title">座標(段)の分布は「なだらか→崖」の形</h3>
-            <p class="trivia-body">全<span class="num">2134</span>回・のべ<span class="num">12,761</span>回の再登場を集計すると、1〜4段目は<span class="num">13.8〜14.5%</span>でほぼ横並び、5段目あたりから急に減っていきます（10段目以降は合計<span class="num">1.7%</span>）。これは「直近に出た数字が列の先頭に来る」しくみ（move-to-front方式の自己組織化リストと同じ構造）による形で、抽選そのものの偏りではありません。</p>
+            <p class="trivia-body">全<span class="num">2134</span>回・のべ<span class="num">12,761</span>回の再登場を集計すると、A〜D段は<span class="num">13.8〜14.5%</span>でほぼ横並び、E段あたりから急に減っていきます（J段以降は合計<span class="num">1.7%</span>）。これは「直近に出た数字が列の先頭に来る」しくみ（move-to-front方式の自己組織化リストと同じ構造）による形で、抽選そのものの偏りではありません。</p>
+        </div>
+<div class="trivia-card">
+            <h3 class="trivia-title">「この前出た数字は避けろ」は本当か</h3>
+            <p class="trivia-body">盤面の<span class="num">A段</span>には、直前の回に出た6個がそのまま並びます（引かれた数字が列の先頭に入るため）。B段はその1つ前、C段はさらに前……と、段は「どれくらい前に出た数字か」を表しています。<br>どの段にも数字は6個ずついるので、抽選が公平なら、どの段からも<span class="num">6÷43＝13.95%</span>の割合で再登場するはずです。</p>
+            <div class="trivia-row"><span class="trivia-row-name">A段</span><span class="trivia-row-val">13.93%</span><span class="trivia-row-sub">理論 13.95%（6.00個が在籍）</span></div><div class="trivia-row"><span class="trivia-row-name">B段</span><span class="trivia-row-val">13.81%</span><span class="trivia-row-sub">理論 13.95%（6.00個が在籍）</span></div><div class="trivia-row"><span class="trivia-row-name">C段</span><span class="trivia-row-val">14.47%</span><span class="trivia-row-sub">理論 13.94%（5.99個が在籍）</span></div><div class="trivia-row"><span class="trivia-row-name">D段</span><span class="trivia-row-val">13.82%</span><span class="trivia-row-sub">理論 13.82%（5.94個が在籍）</span></div>
+            <p class="trivia-body">どの段もほぼ理論値どおりで、ズレは最大0.53ポイント。<b>直前に出たばかりのA段の数字も、4回前のD段の数字も、次に出る確率は変わりません。</b>「この前出た数字は避ける」に根拠はないということです。実際、前回の6個のうち次の回にも出た数は0個が<span class="num">36.6%</span>、1個が<span class="num">45.7%</span>で、これも理論値どおりでした。<br>E段から下がっていくのは、段が深いほどそこにいる数字の数自体が減るからで（上のカードの「崖」の正体）、抽選の偏りではありません。</p>
+            <p class="trivia-body">ちなみに、6個の組み合わせがそっくり同じだった回は<span class="num">一度もありません</span>（組み合わせは全部で<span class="num">6,096,454</span>通りあるので、当分は起こりません）。</p>
         </div>
 <div class="trivia-card">
             <h3 class="trivia-title">連続未出（干上がり）記録</h3>
@@ -217,7 +248,17 @@
         </div>
 <div class="trivia-card">
             <h3 class="trivia-title">ボーナス数字の都市伝説を検証</h3>
-            <p class="trivia-body">「前回のボーナス数字は次回、本数字として出やすい」という説を検証すると<span class="num">13.60%</span>（基準値13.95%）、逆に「前回の本数字は次回ボーナスになりやすい」も<span class="num">13.64%</span>で、どちらも俗説は成立しませんでした。ちなみにボーナス数字が本数字の最小〜最大の範囲内に収まる確率は<span class="num">73.1%</span>ですが、これは6個の数字が散らばれば7個目がその間に入りやすいという組み合わせ論の話で、特別な偏りではありません。</p>
+            <p class="trivia-body">「前回のボーナス数字は次回、本数字として出やすい」という説を検証すると<span class="num">13.60%</span>（基準値13.95%）、逆に「前回の本数字は次回ボーナスになりやすい」も<span class="num">13.64%</span>で、どちらも基準値とほぼ同じで、俗説は成立していません。ちなみにボーナス数字が本数字の最小〜最大の範囲内に収まる確率は<span class="num">73.1%</span>ですが、これは6個の数字が散らばれば7個目がその間に入りやすいという組み合わせ論の話で、特別な偏りではありません。</p>
+        </div>
+<div class="trivia-card">
+            <h3 class="trivia-title">記録的な出目</h3>
+            <p class="trivia-body">合計値がいちばん大きかったのは第1673回（2022/03/21）の<span class="num">212</span>（24 33 35 36 41 43）、いちばん小さかったのは第301回（2006/07/27）の<span class="num">45</span>（4 5 6 9 10 11）でした。</p>
+            <p class="trivia-body">6個すべてが奇数だった回は<span class="num">32</span>回（直近は第1989回（2025/04/10）の15 17 23 29 35 43）、すべて偶数は<span class="num">9</span>回（直近は第2072回（2026/01/29）の8 18 24 36 40 42）。4つ以上の連番が出たのは<span class="num">14</span>回（直近は第1918回（2024/08/01）の3 4 5 6 18 20）、下一桁が4つそろったのは<span class="num">8</span>回（直近は第2074回（2026/02/05）の5 6 16 26 27 36）あります。</p>
+        </div>
+<div class="trivia-card">
+            <h3 class="trivia-title">当選金額とキャリーオーバーの記録</h3>
+            <p class="trivia-body">1等の最高額は第1157回（2017/03/16）の<span class="num">約6.0億円（600,000,000円）</span>（1口）。逆にいちばん少なかった1等は第230回（2005/03/17）の<span class="num">約181万円（1,814,700円）</span>で、このときは<span class="num">167口</span>が当たって山分けになりました。同じ1等でも、何人と分けるかでこれだけ変わります。</p>
+            <p class="trivia-body">1等が誰も当たらなかった回は<span class="num">607</span>回（<span class="num">28.4%</span>）あり、最長で<span class="num">5</span>回連続（第1714回（2022/08/11）まで）。持ち越されたキャリーオーバーの最高額は第1588回（2021/05/24）の<span class="num">約18.8億円（1,884,619,690円）</span>でした。直近の第2134回（2026/09/03）時点ではキャリーオーバーはありません。</p>
         </div>
             </div>
         </div>
@@ -481,6 +522,7 @@
         };
 
         function renderQuickPickTab() {
+            renderQpNumPicker();
             if (!Object.keys(qpChoice).length) setQpPreset('random');
             else renderQpCond();
         }
@@ -514,14 +556,72 @@
             document.getElementById('qp-cond').innerHTML = html;
         }
 
+        // 使う数字の手動指定。qpNumState[番号] = 'keep'(必ず入れる) / 'ban'(除外)。
+        // タップするたび なし → keep → ban → なし と切り替わる。
+        let qpNumState = {};
+
+        function qpKeepNums() {
+            return Object.keys(qpNumState).filter(n => qpNumState[n] === 'keep').map(Number).sort((a, b) => a - b);
+        }
+
+        function qpBanNums() {
+            return Object.keys(qpNumState).filter(n => qpNumState[n] === 'ban').map(Number).sort((a, b) => a - b);
+        }
+
+        function toggleQpNum(n) {
+            const msg = document.getElementById('qp-num-msg');
+            msg.textContent = '';
+            const cur = qpNumState[n];
+            if (!cur) {
+                if (qpKeepNums().length >= 6) msg.textContent = '「必ず入れる」は6個までです。外したい番号をもう一度タップしてください。';
+                else qpNumState[n] = 'keep';
+            } else if (cur === 'keep') {
+                // 除外に回すと残りが6個未満になる場合は指定なしに戻す
+                if (43 - qpBanNums().length - 1 < 6) {
+                    msg.textContent = '除外しすぎです（残る番号が6個を下回ります）。指定なしに戻しました。';
+                    delete qpNumState[n];
+                } else {
+                    qpNumState[n] = 'ban';
+                }
+            } else {
+                delete qpNumState[n];
+            }
+            renderQpNumPicker();
+        }
+
+        function clearQpNums() {
+            qpNumState = {};
+            document.getElementById('qp-num-msg').textContent = '';
+            renderQpNumPicker();
+        }
+
+        function renderQpNumPicker() {
+            const picker = document.getElementById('qp-num-picker');
+            picker.innerHTML = '';
+            for (let i = 1; i <= 43; i++) {
+                const item = document.createElement('div');
+                item.className = 'num-picker-item qp-num-item' + (qpNumState[i] ? ' ' + qpNumState[i] : '');
+                item.textContent = i;
+                item.onclick = () => toggleQpNum(i);
+                picker.appendChild(item);
+            }
+            const keeps = qpKeepNums(), bans = qpBanNums();
+            document.getElementById('qp-num-summary').innerHTML =
+                '<span class="keep-label">◎ 必ず入れる</span>： ' + (keeps.length ? keeps.join('  ') : '指定なし') + '<br>' +
+                '<span class="ban-label">✕ 除外する</span>： ' + (bans.length ? bans.join('  ') : '指定なし') +
+                (keeps.length >= 6 ? '<br>6個すべて指定されているので、この目で固定されます（他の条件は使いません）。' : '');
+        }
+
         function qpRandomSix() {
+            const keep = qpKeepNums();
             const pool = [];
-            for (let i = 1; i <= 43; i++) pool.push(i);
-            for (let i = 0; i < 6; i++) {
+            for (let i = 1; i <= 43; i++) if (!qpNumState[i]) pool.push(i);
+            const need = Math.max(0, 6 - keep.length);
+            for (let i = 0; i < need; i++) {
                 const j = i + Math.floor(Math.random() * (pool.length - i));
                 const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
             }
-            return pool.slice(0, 6).sort((a, b) => a - b);
+            return keep.concat(pool.slice(0, need)).sort((a, b) => a - b);
         }
 
         function qpActiveTests() {
@@ -536,7 +636,7 @@
         // 条件を満たす目が出るまで引き直す（棄却サンプリング）。
         // 厳しすぎて出ないときは、後ろの条件から順に外して必ず1口返す。
         function drawQuickPick() {
-            let tests = qpActiveTests();
+            let tests = qpKeepNums().length >= 6 ? [] : qpActiveTests();
             const dropped = [];
             let picked = null;
             while (true) {
@@ -577,7 +677,8 @@
             const f = qpFeatures(m);
             const hot = qpHotNumbers();
             document.getElementById('qp-balls').innerHTML = m.map(n =>
-                '<div class="qp-ball' + (hot.indexOf(n) >= 0 ? ' hot' : '') + '">' + n + '</div>').join('');
+                '<div class="qp-ball' + (hot.indexOf(n) >= 0 ? ' hot' : '') +
+                (qpNumState[n] === 'keep' ? ' keep' : '') + '">' + n + '</div>').join('');
 
             const bandKey = String(Math.floor(f.sum / QP_STATS.sumBand) * QP_STATS.sumBand);
             const bandPct = QP_STATS.sumBands[bandKey] || 0;
@@ -630,7 +731,7 @@
 
             document.getElementById('qp-diagnosis').innerHTML =
                 '<div class="qp-diag-head">この目の診断（全' + QP_STATS.n + '回との比較）</div>' +
-                '<div class="qp-diag-note">％＝過去に同じ形だった回の割合（合計値は10刻みの帯で判定）。★はその項目でいちばん多い形。オレンジのボールは直近' + QP_HOT_WINDOW + '回のホット番号です。</div>' +
+                '<div class="qp-diag-note">％＝過去に同じ形だった回の割合（合計値は10刻みの帯で判定）。★はその項目でいちばん多い形。オレンジのボールは直近' + QP_HOT_WINDOW + '回のホット番号、白い二重枠は自分で指定した番号です。</div>' +
                 rows.join('') +
                 '<div class="qp-score"><span class="qp-score-num">' + score + '</span>' +
                 '<span class="qp-score-label">点／過去の出目らしさ・' + comment + '</span></div>';
