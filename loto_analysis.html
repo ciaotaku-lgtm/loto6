@@ -8,6 +8,10 @@
         body { background-color: #0f0a07; color: white; margin: 0; display: flex; flex-direction: column; align-items: center; min-height: 100vh; font-family: sans-serif; overflow-x: hidden; }
         .main-container { width: 100%; max-width: 480px; padding: 10px 0; display: flex; flex-direction: column; align-items: center; }
         .title { color: #e5c100; font-size: 18px; font-weight: bold; margin-bottom: 8px; text-shadow: 0 0 15px rgba(229,193,0,0.5); }
+        /* 使い方ガイド(guide.html)への導線。タブが6つあって初見では分かりにくいので、
+           タイトル直下に常時出しておく。主役はあくまで盤面なので控えめな枠線ボタンにする。 */
+        .guide-link { display: inline-block; margin: 0 0 12px 0; padding: 6px 15px; border: 1px solid rgba(212,175,55,0.45); border-radius: 20px; background: rgba(212,175,55,0.08); color: #ffd700; text-decoration: none; font-size: 11.5px; font-weight: bold; }
+        .guide-link:active { transform: scale(0.96); }
         .board-wrapper { display: flex; gap: 10px; justify-content: center; align-items: flex-start; margin-bottom: 180px; width: 100%; padding: 0 15px; box-sizing: border-box; }
         .main-board { position: relative; width: 260px; height: 520px; background: rgba(0,0,0,0.85); padding: 10px; border-radius: 25px 25px 0 0; border: 2.5px solid #d4af37; border-bottom: none; box-shadow: 0 -10px 30px rgba(0,0,0,0.8); }
         .ball { position: absolute; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 14px; border: 1.1px solid rgba(255, 255, 255, 0.4); box-shadow: 0 4px 8px rgba(0,0,0,0.5), inset -1px -1px 3px rgba(0,0,0,0.3); transition: left 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), top 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.6s; z-index: 10; }
@@ -140,6 +144,7 @@
 <body>
     <div class="main-container">
         <p class="title">LOTO 6 PREMIUM ANALYSIS - 極 -</p>
+        <a class="guide-link" href="./guide.html">はじめての方へ　使い方ガイド ›</a>
         <div class="tab-bar">
             <button id="tab-btn-board" class="tab-btn active" onclick="switchTab('board')">盤面</button>
             <button id="tab-btn-freq" class="tab-btn" onclick="switchTab('freq')">頻度</button>
@@ -292,22 +297,21 @@
         // 熱い(直近で出た)数字かをざっくり掴む」ことだけに絞り、七色(虹)7バンドに
         // まとめている(正確な段数は位置と「段×列マトリクス」タブで確認できる)。
         //
-        // バンドの区切り方は実データ(全2125回・のべ12,707回の再登場)に基づく。
-        // 数字の再登場は上位の段ほど多く(1段目14.0%, 2段目11.9%, 3段目10.7%, 4段目9.1%…と
-        // 右肩下がり)、そこを潰して同じ色にすると一番見分けたい情報が消えてしまう。
-        // そのため1〜4段目は必ず単独の色にし、発生頻度が下がる5段目以降だけをまとめている
+        // バンドの区切り方は実データに基づく。A〜D段には常にほぼ6個ずつ在籍していて
+        // 再登場率もほぼ横並び、E段あたりから在籍数自体が減って「崖」になる。上位ほど
+        // 見分けたい情報なので1〜4段目は単独色にし、5段目以降だけをまとめている
         // (「上位重視案」で決定): 1 / 2 / 3 / 4 / 5-6 / 7-9 / 10-11+
-        const TIER_ROWS = 11; // A段〜K段。それより深い段は最終行「L段+」にまとめる
-        const TIER_LABELS = ['A','B','C','D','E','F','G','H','I','J','K','L'];
-        const BAND_COLORS = ['#e52b46', '#de612b', '#d6d13d', '#29a039', '#123cef', '#207aa6', '#9629e5']; // 赤橙黄緑青藍紫(橙黄は隣接段との色相差確保のため調整済み。5-6段目↔7-9段目は「青寄り→水色寄り」の見た目順になるよう入替済み)
-        const BAND_TEXT   = ['#ffffff', '#1a120b', '#1a120b', '#1a120b', '#ffffff', '#ffffff', '#ffffff'];
-        // 縁取りは「自分の背景色を明るくした色」(セルフトーン)。段ごとに縁が全て異なるため、
-        // 白/黒/金を使い回して重複したり黒縁が背景に溶けたりする問題が構造的に起きない。
-        const BAND_RING_COLOR = ['#f3a0ac', '#f0b8a0', '#edeaa8', '#9fd4a6', '#94a7f8', '#9bc3d7', '#d09ff3'];
-        // tier(0〜11) → バンド番号(0〜6) の対応表。上4段は1段=1バンド、以降は複数段をまとめる。
+        //
+        // 定数の実体はPython側(make_loto.py 冒頭)にある。使い方ガイド(guide.html)の
+        // 色凡例と必ず同じ値になるよう、そこから流し込んでいる。
+        const TIER_ROWS = 11;
+        const TIER_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"];
+        const BAND_COLORS = ["#e52b46", "#de612b", "#d6d13d", "#29a039", "#123cef", "#207aa6", "#9629e5"];
+        const BAND_TEXT   = ["#ffffff", "#1a120b", "#1a120b", "#1a120b", "#ffffff", "#ffffff", "#ffffff"];
+        const BAND_RING_COLOR = ["#f3a0ac", "#f0b8a0", "#edeaa8", "#9fd4a6", "#94a7f8", "#9bc3d7", "#d09ff3"];
         const TIER_TO_BAND = [0, 1, 2, 3, 4, 4, 5, 5, 5, 6, 6, 6];
         const bandOfTier = (tier) => TIER_TO_BAND[tier];
-        const NEVER_DRAWN_BG = '#efece4'; // まだ一度も出ていない数字(バンドとは別扱い)
+        const NEVER_DRAWN_BG = '#efece4';
         const NEVER_DRAWN_TEXT = '#4a4a4a';
 
         let ballElements = {}; let currentIndex = 0; let lastDrawnAt = {}; let columns = [[], [], [], [], [], []]; let timer = null;

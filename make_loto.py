@@ -12,6 +12,25 @@ import os
 DATA_URL = "https://www.mk-mode.com/rails/loto/LOTO6_ALL.csv"
 CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loto6_history.json")
 OUTPUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loto_analysis.html")
+GUIDE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guide.html")
+
+# --- 盤面の段(tier)の配色 ---
+# アプリ本体のJSと使い方ガイド(guide.html)の凡例で同じ値を使う必要があるため、
+# JS側にリテラルで置かずここに集約してテンプレートへ流し込んでいる。
+# (片方だけ色を変えて凡例が実物と食い違う、という事故を構造的に防ぐのが目的)
+TIER_ROWS = 11  # A段〜K段。それより深い段は最終行「L段+」にまとめる
+TIER_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"]
+# 赤橙黄緑青藍紫。橙黄は隣接段との色相差を確保するため調整済み。
+# 5-6段目↔7-9段目は「青寄り→水色寄り」の見た目順になるよう入替済み。
+BAND_COLORS = ["#e52b46", "#de612b", "#d6d13d", "#29a039", "#123cef", "#207aa6", "#9629e5"]
+BAND_TEXT = ["#ffffff", "#1a120b", "#1a120b", "#1a120b", "#ffffff", "#ffffff", "#ffffff"]
+# 縁取りは「自分の背景色を明るくした色」(セルフトーン)。段ごとに縁が全て異なるため、
+# 白/黒/金を使い回して重複したり黒縁が背景に溶けたりする問題が構造的に起きない。
+BAND_RING_COLOR = ["#f3a0ac", "#f0b8a0", "#edeaa8", "#9fd4a6", "#94a7f8", "#9bc3d7", "#d09ff3"]
+# tier(0〜11) → バンド番号(0〜6) の対応表。上4段は1段=1バンド、以降は複数段をまとめる。
+TIER_TO_BAND = [0, 1, 2, 3, 4, 4, 5, 5, 5, 6, 6, 6]
+NEVER_DRAWN_BG = "#efece4"  # まだ一度も出ていない数字(バンドとは別扱い)
+NEVER_DRAWN_TEXT = "#4a4a4a"
 
 
 def load_cache():
@@ -471,6 +490,291 @@ def build_trivia_html(history):
     return header + "\n" + "\n".join(cards)
 
 
+def band_legend_rows():
+    """段の色バンドの凡例(色・見出し・意味)を、実際にアプリが使う定数から組み立てる。
+
+    色を変えたときにガイドの凡例だけ古くなる事故を防ぐため、ここでハードコードはしない。
+    盤面の色は「何回前の抽選で出たか」で決まるので、凡例もその言葉で書く
+    (A段/B段…という段名は座標タブの「位置」の話なので、ここでは使わない)。
+    """
+    rows = []
+    for band in range(len(BAND_COLORS)):
+        tiers = [t for t, b in enumerate(TIER_TO_BAND) if b == band]
+        lo, hi = tiers[0], tiers[-1]
+        if hi >= TIER_ROWS:
+            when = f"{lo}回前より古い"
+        elif lo == hi:
+            when = "この回で出たばかり" if lo == 0 else f"{lo}回前に出た"
+        else:
+            when = f"{lo}〜{hi}回前に出た"
+        rows.append({
+            "bg": BAND_COLORS[band],
+            "fg": BAND_TEXT[band],
+            "ring": BAND_RING_COLOR[band],
+            "when": when,
+        })
+    return rows
+
+
+def build_guide_html():
+    """使い方ガイド(guide.html)を生成する。
+
+    データに依存する数値は意図的に一切書いていない(アプリ側の表示が常に最新なので、
+    ガイドに数値を書くと更新のたびに食い違う)。唯一の例外は数学的に固定の当選確率。
+    """
+    legend = "".join(
+        f'<li><span class="swatch" style="background:{r["bg"]};color:{r["fg"]};'
+        f'border-color:{r["ring"]}">●</span><span class="swatch-text">{r["when"]}</span></li>'
+        for r in band_legend_rows()
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>使い方ガイド | LOTO 6 PREMIUM ANALYSIS - 極 -</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ box-sizing: border-box; }}
+  body {{ background: #0f0a07; color: #e8e2d6; margin: 0; font-family: sans-serif;
+         line-height: 1.85; -webkit-text-size-adjust: 100%; }}
+  .wrap {{ max-width: 560px; margin: 0 auto; padding: 0 16px 120px 16px; }}
+
+  .topbar {{ position: sticky; top: 0; z-index: 50; background: rgba(15,10,7,0.96);
+             border-bottom: 1.5px solid rgba(212,175,55,0.4); backdrop-filter: blur(6px); }}
+  .topbar-inner {{ max-width: 560px; margin: 0 auto; padding: 10px 16px;
+                   display: flex; align-items: center; gap: 10px; }}
+  .back-link {{ color: #1a120b; background: linear-gradient(180deg, #ffd700, #b8860b);
+                text-decoration: none; font-size: 12px; font-weight: bold;
+                padding: 7px 14px; border-radius: 20px; white-space: nowrap; }}
+  .topbar-title {{ font-size: 12px; color: #8a7a5c; font-weight: bold; }}
+
+  .hero {{ text-align: center; padding: 26px 0 6px 0; }}
+  .hero h1 {{ font-size: 19px; color: #e5c100; margin: 0 0 6px 0;
+              text-shadow: 0 0 15px rgba(229,193,0,0.5); }}
+  .hero p {{ font-size: 13px; color: #b8ac96; margin: 0; }}
+
+  h2 {{ font-size: 16px; color: #ffd700; margin: 34px 0 10px 0;
+        border-bottom: 1.5px solid rgba(212,175,55,0.35); padding-bottom: 7px;
+        scroll-margin-top: 60px; }}
+  h3 {{ font-size: 13.5px; color: #ffe06a; margin: 20px 0 6px 0; }}
+  p, li {{ font-size: 13.5px; }}
+  p {{ margin: 0 0 12px 0; }}
+  ul {{ padding-left: 1.25em; margin: 0 0 12px 0; }}
+  li {{ margin-bottom: 6px; }}
+  strong {{ color: #ffd700; }}
+  code {{ background: rgba(212,175,55,0.12); border-radius: 4px; padding: 1px 5px;
+          font-size: 12.5px; color: #ffe06a; }}
+
+  .card {{ border: 1px solid rgba(212,175,55,0.3); border-radius: 14px;
+           background: rgba(255,255,255,0.04); padding: 14px 16px; margin-bottom: 12px; }}
+
+  .steps {{ counter-reset: step; list-style: none; padding: 0; margin: 0; }}
+  .steps > li {{ counter-increment: step; position: relative; padding-left: 40px;
+                 margin-bottom: 14px; }}
+  .steps > li::before {{ content: counter(step); position: absolute; left: 0; top: 1px;
+      width: 26px; height: 26px; border-radius: 50%; display: flex;
+      align-items: center; justify-content: center; font-weight: 900; font-size: 13px;
+      color: #1a120b; background: linear-gradient(180deg, #ffd700, #b8860b); }}
+  .steps b {{ color: #ffd700; }}
+
+  .notice {{ border: 1px solid rgba(232,163,61,0.5); background: rgba(232,163,61,0.08);
+             border-radius: 14px; padding: 13px 16px; margin-bottom: 12px; }}
+  .notice .notice-head {{ color: #e8a33d; font-weight: bold; font-size: 13px;
+                          display: block; margin-bottom: 4px; }}
+  .notice p {{ margin: 0; font-size: 12.5px; color: #ddd2bd; }}
+
+  table {{ width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 12.5px; }}
+  th, td {{ text-align: left; padding: 8px 8px; border-bottom: 1px solid rgba(212,175,55,0.18);
+            vertical-align: top; }}
+  th {{ color: #8a7a5c; font-size: 11.5px; font-weight: bold; white-space: nowrap; }}
+  td a {{ color: #ffd700; font-weight: bold; text-decoration: none;
+          border-bottom: 1px dotted rgba(255,215,55,0.5); white-space: nowrap; }}
+
+  .legend {{ list-style: none; padding: 0; margin: 0 0 12px 0; }}
+  .legend li {{ display: flex; align-items: center; gap: 11px; margin-bottom: 7px; }}
+  .swatch {{ width: 34px; height: 34px; min-width: 34px; border-radius: 50%;
+             border: 3px solid #fff; display: flex; align-items: center;
+             justify-content: center; font-size: 0; box-shadow: 0 3px 7px rgba(0,0,0,0.5); }}
+  .swatch-text {{ font-size: 13px; }}
+
+  .kv {{ list-style: none; padding: 0; margin: 0; }}
+  .kv li {{ margin-bottom: 9px; }}
+  .kv b {{ display: block; color: #ffd700; font-size: 13px; }}
+  .kv span {{ font-size: 12.5px; color: #cfc5b2; }}
+
+  .toc {{ display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 8px; }}
+  .toc a {{ flex: 1 1 28%; text-align: center; color: #ffd700; text-decoration: none;
+            border: 1px solid rgba(212,175,55,0.4); border-radius: 12px;
+            padding: 9px 4px; font-size: 13px; font-weight: bold; }}
+
+  .footer-cta {{ display: block; text-align: center; margin: 34px 0 0 0;
+                 color: #1a120b; background: linear-gradient(180deg, #ffd700, #b8860b);
+                 text-decoration: none; font-weight: bold; font-size: 14px;
+                 padding: 14px 0; border-radius: 16px; }}
+  .fineprint {{ font-size: 11.5px; color: #6f6250; line-height: 1.8; }}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="topbar-inner">
+  <a class="back-link" href="./loto_analysis.html">← アプリに戻る</a>
+  <span class="topbar-title">使い方ガイド</span>
+</div></div>
+
+<div class="wrap">
+
+<div class="hero">
+  <h1>LOTO 6 PREMIUM ANALYSIS - 極 -<br>使い方ガイド</h1>
+  <p>タブが6つあるので、それぞれ何を見るためのものかをまとめました。</p>
+</div>
+
+<h2 id="quick">まずこれだけ</h2>
+<div class="card">
+  <p>このアプリは、第1回から最新回までのロト6の当選数字を、<strong>43個のボールが並ぶ盤面</strong>として最初から再生して眺めるものです。全部読まなくても、次の3つだけで一通り遊べます。</p>
+  <ol class="steps">
+    <li><b>盤面タブで「自動再生」を押す</b><br>
+        ボールが動き出します。下のスライダーで好きな回まで飛べます。</li>
+    <li><b>予想タブで「この条件で引く」を押す</b><br>
+        条件つきで1口を自動生成します。数字を自分で指定することもできます。</li>
+    <li><b>トリビアタブを眺める</b><br>
+        全データから毎回計算し直している小ネタが並んでいます。</li>
+  </ol>
+</div>
+
+<div class="notice">
+  <span class="notice-head">先に大事なこと</span>
+  <p>ロト6は毎回まったく独立した抽選で、1等が当たる確率は <strong>1/6,096,454</strong> のまま変わりません。このアプリのどの機能を使っても<strong>当選確率は上がりません</strong>。過去の傾向を眺めて楽しむため、そして自分の買う数字を決める踏ん切りをつけるための道具だと思ってください。</p>
+</div>
+
+<h2 id="tabs">タブ早見表</h2>
+<table>
+  <tr><th>タブ</th><th>ひとことで</th><th>こんなときに</th></tr>
+  <tr><td><a href="#board">盤面</a></td><td>全43個の動きを再生</td><td>とりあえず眺めたい</td></tr>
+  <tr><td><a href="#freq">頻度</a></td><td>番号ごとの出現回数ランキング</td><td>よく出る番号を知りたい</td></tr>
+  <tr><td><a href="#tier">座標</a></td><td>盤面のどの位置から再登場したかの表</td><td>盤面の見え方の裏付けが欲しい</td></tr>
+  <tr><td><a href="#pair">ペア</a></td><td>2つの数字の組み合わせ</td><td>相性のいい番号を探したい</td></tr>
+  <tr><td><a href="#qp">予想</a></td><td>条件を決めて1口引く</td><td>買う数字を決めたい</td></tr>
+  <tr><td><a href="#trivia">トリビア</a></td><td>データから見つけた小ネタ</td><td>読み物として楽しみたい</td></tr>
+</table>
+
+<div class="notice">
+  <span class="notice-head">全タブ共通のしくみ</span>
+  <p>画面下のスライダーで<strong>過去の回に戻すと、頻度・座標・ペアの集計もその回までのデータに切り替わります</strong>。「10年前の時点ではどの番号が人気だったか」といった見方ができます（予想タブとトリビアタブは常に最新データを使います）。</p>
+</div>
+
+<div class="toc">
+  <a href="#board">盤面</a><a href="#freq">頻度</a><a href="#tier">座標</a>
+  <a href="#pair">ペア</a><a href="#qp">予想</a><a href="#trivia">トリビア</a>
+</div>
+
+<h2 id="board">盤面タブ</h2>
+<p>1〜43の全ボールが、6つの列に分かれて並んでいます。抽選が1回進むたびに、<strong>その回に出た6個が列の一番上に飛び込み、下にいたボールが1段ずつ押し下げられます</strong>。</p>
+
+<h3>横（列）の意味</h3>
+<p>列は「その回で<strong>何番目に小さい数字だったか</strong>」です。一番小さい数字が1列目、一番大きい数字が6列目に入ります。ですので左の列ほど小さい数字が集まりやすく、右の列ほど大きい数字が集まりやすくなります。</p>
+
+<h3>縦（段）の意味</h3>
+<p>上にあるほど新しく入ったボールです。正確には「<strong>自分より後にその列へ入ってきて、まだ抜けていないボールの数</strong>」が、そのまま上からの位置になります。</p>
+
+<h3>色の意味</h3>
+<p>色は位置とは別に、<strong>何回前の抽選で出たか</strong>だけで決まります。赤に近いほど最近出た数字です。</p>
+<ul class="legend">{legend}</ul>
+
+<div class="notice">
+  <span class="notice-head">位置と色は必ずしも一致しません</span>
+  <p>一番上の段は「直前の回に出た6個」なので必ず赤ですが、そこから下は<strong>位置と色がずれていきます</strong>。同じ列の上のボールが再び当選して抜けると、下のボールは上へ詰まる一方、色（何回前に出たか）は変わらないためです。つまり<strong>位置と色は別々の情報</strong>だと思って見てください。</p>
+</div>
+
+<h3>そのほかの見どころ</h3>
+<ul class="kv">
+  <li><b>白い縁のボール</b><span>今表示している回に出た6個です。抽選の瞬間は大きく光って浮き上がります。</span></li>
+  <li><b>右側の縦長のボックス</b><span>ボーナス数字の直近5回分。一番上の大きいものが最新です。</span></li>
+</ul>
+
+<h3>下の操作パネル</h3>
+<ul class="kv">
+  <li><b>スライダー / −100・−10・+10・+100</b><span>好きな回へジャンプします。左端が第1回、右端が最新回です。</span></li>
+  <li><b>◀ 前へ / 次へ ▶</b><span>1回ずつ進める・戻す。抽選の演出つきで動きます。</span></li>
+  <li><b>自動再生 / 停止</b><span>押すと連続再生。もう一度押すと止まります。</span></li>
+  <li><b>遅い ⟷ 速い</b><span>自動再生の速さ。再生したままでも切り替えられます。</span></li>
+</ul>
+
+<h2 id="freq">頻度タブ</h2>
+<p>1〜43の番号を<strong>出現回数の多い順</strong>に並べたランキングです。上位3つに <code>HOT</code>、下位3つに <code>COLD</code> のマークが付きます。</p>
+<ul class="kv">
+  <li><b>直近N回スライダー</b><span>集計する期間を自由に変えられます。全期間だと差はほとんど消えますが、直近100回など短くすると順位がガラッと変わります。この「短く切ると偏って見える」感じを味わうのがこのタブの面白さです。</span></li>
+  <li><b>全期間ボタン</b><span>いま表示している回までの全部で集計し直します。</span></li>
+</ul>
+<div class="notice">
+  <span class="notice-head">読むときの注意</span>
+  <p>上位の番号が「出やすい番号」というわけではありません。43個をランダムに何千回も引けば、偶然だけでこれくらいの差は必ず生まれます（統計的に有意な偏りがないことはトリビアタブで検証しています）。</p>
+</div>
+
+<h2 id="tier">座標タブ</h2>
+<p>盤面の見え方を数字にした表です。<strong>再登場した数字が、その直前どこにいたか</strong>を、列（横）と段（縦）のマス目ごとに数えています。色が濃いマスほど回数が多いところです。</p>
+<ul class="kv">
+  <li><b>列（1列目〜6列目）</b><span>盤面の横位置と同じ。その回で何番目に小さい数字だったか。</span></li>
+  <li><b>段（A段〜L段+）</b><span>盤面の縦位置と同じで、A段が一番上。L段+は11段目より深いところをまとめたものです。</span></li>
+  <li><b>ラベルの下の小さい数字</b><span>その段・その列の合計回数です。</span></li>
+  <li><b>直近N回スライダー</b><span>集計期間を変えられます。頻度タブと同じ考え方です。</span></li>
+</ul>
+<p>上の方の段ほど数が大きくなりますが、これは抽選が偏っているからではありません。A段からD段あたりには常にほぼ6個ずつボールが在籍していて、E段より下は在籍数そのものが減っていくためです。詳しくはトリビアタブに解説があります。</p>
+
+<h2 id="pair">ペアタブ</h2>
+<p>2つの数字が<strong>同じ回に一緒に出た回数</strong>を見るタブです。上のボタンで3つのモードを切り替えます。</p>
+<ul class="kv">
+  <li><b>全体TOP20</b><span>一緒に出た回数が多いペアの上位20組。</span></li>
+  <li><b>注目ペア</b><span>単純な回数ではなく、理論上の期待回数からどれだけ離れているか（ズレの大きさ）で並べたもの。「出すぎているペア」と「出なさすぎているペア」を各10組ずつ表示します。回数が多いだけのペアより「意外さ」がわかります。</span></li>
+  <li><b>番号を選ぶ</b><span>1〜43から1つタップすると、その番号と一緒に出た回数が多い相手を順に並べます。</span></li>
+</ul>
+<div class="notice">
+  <span class="notice-head">読むときの注意</span>
+  <p>ペアの組み合わせは903通りもあるので、そのうちのいくつかが偶然大きくずれるのはごく普通のことです。「注目ペア」も次回そのペアが出やすいという意味ではありません。</p>
+</div>
+
+<h2 id="qp">予想タブ</h2>
+<p>条件を決めて<strong>1口ぶんの6個を自動で選ぶ</strong>タブです。<strong>この条件で引く</strong>ボタンを押すたびに引き直せます。</p>
+
+<h3>プリセット（3つ）</h3>
+<ul class="kv">
+  <li><b>🎲 大穴狙い 完全ランダム</b><span>何の条件もつけない純粋なランダム。他の人と目が被りにくいのはこれです。</span></li>
+  <li><b>📊 統計重視 ガチガチ</b><span>過去にいちばんよくある形（合計値の範囲、奇数と偶数のバランスなど）に寄せて選びます。</span></li>
+  <li><b>🔥 直近10回ホット重視</b><span>直近10回で2回以上出ている番号を多めに含めます。</span></li>
+</ul>
+
+<h3>カスタム条件</h3>
+<p>プリセットを土台に、合計値・奇数と偶数の比・低い数字と高い数字の比・連続する数字・下一桁の被り・ホット番号の6項目を自由に変えられます。各選択肢には<strong>過去の何%がその形だったか</strong>が添えてあるので、選んでいる条件が普通なのか珍しいのかがその場でわかります。</p>
+
+<h3>使う数字を選ぶ</h3>
+<p>番号を<strong>タップするたびに 指定なし → ◎必ず入れる → ✕除外 → 指定なし</strong> と切り替わります。◎は6個まで、✕は選べる番号が6個を下回らない範囲まで指定できます。◎で指定した番号は、生成された結果では白い二重枠で表示されます。</p>
+<p>番号の指定は条件より優先されます。両方を満たせないときは条件のほうを外して1口返し、外した条件を画面に表示します。</p>
+
+<h3>診断の読み方</h3>
+<p>引いたあとに出る表は、その目の特徴ごとに「<strong>過去に同じ形だった回の割合</strong>」を並べたものです。★はその項目でいちばん多い形を表します。いちばん下の「過去の出目らしさ」は、各項目がその最頻値にどれだけ近いかを平均した総合点です。</p>
+<div class="notice">
+  <span class="notice-head">点数が高くても当たりやすくはなりません</span>
+  <p>「過去の出目らしさ」が高いのは、あくまで過去によくあった形に似ているというだけです。唯一の実利は、<strong>珍しい形を避けるほど他の購入者と目が被りやすく、逆に完全ランダムほど被りにくい</strong>＝当たったときの山分け人数が変わる、という点だけです。</p>
+</div>
+
+<h2 id="trivia">トリビアタブ</h2>
+<p>全データを調べて見つかった小ネタを並べています。盤面の段の形の正体、俗説（この前出た数字は避けろ、など）の検証、記録的な出目、当選金額とキャリーオーバーの記録などです。</p>
+<p>ここに出る数値と結論の文章は<strong>データが更新されるたびに計算し直しています</strong>。書きっぱなしの固定文ではないので、古くなることはありません。集計対象がどこまでのデータかは、タブの先頭に常に表示しています。</p>
+
+<h2 id="data">データと注意事項</h2>
+<p class="fineprint">
+  当選数字は第1回からの全回データを公開元から取得しています。抽選は毎週月曜と木曜で、その翌日に自動で最新化されます（提供元の更新が遅れた場合は、反映が半日〜1日ずれることがあります）。<br><br>
+  このアプリは個人が趣味で作ったもので、宝くじの販売元とは一切関係ありません。当選を保証したり、購入を勧誘したりするものではありません。表示内容の正確性についても保証はできませんので、実際の当選確認は必ず公式の発表でお願いします。
+</p>
+
+<a class="footer-cta" href="./loto_analysis.html">アプリに戻る</a>
+
+</div>
+</body>
+</html>
+"""
+
+
 def main():
     print("最新の歴史データを同期中...")
     history = load_cache()
@@ -497,6 +801,13 @@ def main():
     qp_stats_json = json.dumps(compute_quickpick_stats(history))
     trivia_html = build_trivia_html(history)
 
+    # 段の配色定数はPython側が実体。ここからアプリのJSへ流し込む(guide.htmlと共通)。
+    tier_labels_js = json.dumps(TIER_LABELS)
+    band_colors_js = json.dumps(BAND_COLORS)
+    band_text_js = json.dumps(BAND_TEXT)
+    band_ring_js = json.dumps(BAND_RING_COLOR)
+    tier_to_band_js = json.dumps(TIER_TO_BAND)
+
     # HTMLテンプレート（極・完成版デザイン）
     html_content = f"""<!DOCTYPE html>
 <html lang="ja">
@@ -508,6 +819,10 @@ def main():
         body {{ background-color: #0f0a07; color: white; margin: 0; display: flex; flex-direction: column; align-items: center; min-height: 100vh; font-family: sans-serif; overflow-x: hidden; }}
         .main-container {{ width: 100%; max-width: 480px; padding: 10px 0; display: flex; flex-direction: column; align-items: center; }}
         .title {{ color: #e5c100; font-size: 18px; font-weight: bold; margin-bottom: 8px; text-shadow: 0 0 15px rgba(229,193,0,0.5); }}
+        /* 使い方ガイド(guide.html)への導線。タブが6つあって初見では分かりにくいので、
+           タイトル直下に常時出しておく。主役はあくまで盤面なので控えめな枠線ボタンにする。 */
+        .guide-link {{ display: inline-block; margin: 0 0 12px 0; padding: 6px 15px; border: 1px solid rgba(212,175,55,0.45); border-radius: 20px; background: rgba(212,175,55,0.08); color: #ffd700; text-decoration: none; font-size: 11.5px; font-weight: bold; }}
+        .guide-link:active {{ transform: scale(0.96); }}
         .board-wrapper {{ display: flex; gap: 10px; justify-content: center; align-items: flex-start; margin-bottom: 180px; width: 100%; padding: 0 15px; box-sizing: border-box; }}
         .main-board {{ position: relative; width: 260px; height: 520px; background: rgba(0,0,0,0.85); padding: 10px; border-radius: 25px 25px 0 0; border: 2.5px solid #d4af37; border-bottom: none; box-shadow: 0 -10px 30px rgba(0,0,0,0.8); }}
         .ball {{ position: absolute; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 14px; border: 1.1px solid rgba(255, 255, 255, 0.4); box-shadow: 0 4px 8px rgba(0,0,0,0.5), inset -1px -1px 3px rgba(0,0,0,0.3); transition: left 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), top 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.6s; z-index: 10; }}
@@ -640,6 +955,7 @@ def main():
 <body>
     <div class="main-container">
         <p class="title">LOTO 6 PREMIUM ANALYSIS - 極 -</p>
+        <a class="guide-link" href="./guide.html">はじめての方へ　使い方ガイド ›</a>
         <div class="tab-bar">
             <button id="tab-btn-board" class="tab-btn active" onclick="switchTab('board')">盤面</button>
             <button id="tab-btn-freq" class="tab-btn" onclick="switchTab('freq')">頻度</button>
@@ -763,23 +1079,22 @@ def main():
         // 熱い(直近で出た)数字かをざっくり掴む」ことだけに絞り、七色(虹)7バンドに
         // まとめている(正確な段数は位置と「段×列マトリクス」タブで確認できる)。
         //
-        // バンドの区切り方は実データ(全2125回・のべ12,707回の再登場)に基づく。
-        // 数字の再登場は上位の段ほど多く(1段目14.0%, 2段目11.9%, 3段目10.7%, 4段目9.1%…と
-        // 右肩下がり)、そこを潰して同じ色にすると一番見分けたい情報が消えてしまう。
-        // そのため1〜4段目は必ず単独の色にし、発生頻度が下がる5段目以降だけをまとめている
+        // バンドの区切り方は実データに基づく。A〜D段には常にほぼ6個ずつ在籍していて
+        // 再登場率もほぼ横並び、E段あたりから在籍数自体が減って「崖」になる。上位ほど
+        // 見分けたい情報なので1〜4段目は単独色にし、5段目以降だけをまとめている
         // (「上位重視案」で決定): 1 / 2 / 3 / 4 / 5-6 / 7-9 / 10-11+
-        const TIER_ROWS = 11; // A段〜K段。それより深い段は最終行「L段+」にまとめる
-        const TIER_LABELS = ['A','B','C','D','E','F','G','H','I','J','K','L'];
-        const BAND_COLORS = ['#e52b46', '#de612b', '#d6d13d', '#29a039', '#123cef', '#207aa6', '#9629e5']; // 赤橙黄緑青藍紫(橙黄は隣接段との色相差確保のため調整済み。5-6段目↔7-9段目は「青寄り→水色寄り」の見た目順になるよう入替済み)
-        const BAND_TEXT   = ['#ffffff', '#1a120b', '#1a120b', '#1a120b', '#ffffff', '#ffffff', '#ffffff'];
-        // 縁取りは「自分の背景色を明るくした色」(セルフトーン)。段ごとに縁が全て異なるため、
-        // 白/黒/金を使い回して重複したり黒縁が背景に溶けたりする問題が構造的に起きない。
-        const BAND_RING_COLOR = ['#f3a0ac', '#f0b8a0', '#edeaa8', '#9fd4a6', '#94a7f8', '#9bc3d7', '#d09ff3'];
-        // tier(0〜11) → バンド番号(0〜6) の対応表。上4段は1段=1バンド、以降は複数段をまとめる。
-        const TIER_TO_BAND = [0, 1, 2, 3, 4, 4, 5, 5, 5, 6, 6, 6];
+        //
+        // 定数の実体はPython側(make_loto.py 冒頭)にある。使い方ガイド(guide.html)の
+        // 色凡例と必ず同じ値になるよう、そこから流し込んでいる。
+        const TIER_ROWS = {TIER_ROWS};
+        const TIER_LABELS = {tier_labels_js};
+        const BAND_COLORS = {band_colors_js};
+        const BAND_TEXT   = {band_text_js};
+        const BAND_RING_COLOR = {band_ring_js};
+        const TIER_TO_BAND = {tier_to_band_js};
         const bandOfTier = (tier) => TIER_TO_BAND[tier];
-        const NEVER_DRAWN_BG = '#efece4'; // まだ一度も出ていない数字(バンドとは別扱い)
-        const NEVER_DRAWN_TEXT = '#4a4a4a';
+        const NEVER_DRAWN_BG = '{NEVER_DRAWN_BG}';
+        const NEVER_DRAWN_TEXT = '{NEVER_DRAWN_TEXT}';
 
         let ballElements = {{}}; let currentIndex = 0; let lastDrawnAt = {{}}; let columns = [[], [], [], [], [], []]; let timer = null;
         let activeTab = 'board'; let freqWindowSize = 100;
@@ -1612,6 +1927,12 @@ def main():
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write(html_content)
     print(f"生成完了: {OUTPUT_FILE} が作成されました。")
+
+    # 使い方ガイド。抽選データには依存しないが、段の配色定数を共有しているので
+    # アプリと同じタイミングで作り直しておく(色を変えたら凡例も自動で追従する)。
+    with open(GUIDE_FILE, 'w', encoding='utf-8') as f:
+        f.write(build_guide_html())
+    print(f"生成完了: {GUIDE_FILE} が作成されました。")
 
 if __name__ == '__main__':
     main()
